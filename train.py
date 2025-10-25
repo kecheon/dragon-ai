@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 # ================================
 SYMBOL = 'BTCUSDT'
 TIMEFRAME = '5m'
-START_DATE = '2025-01-01T00:00:00Z'
+START_DATE = '2025-10-01T00:00:00Z'
 
 exchange = ccxt.binanceus({'options': {'defaultType': 'future'}})
 exchange.load_markets()
