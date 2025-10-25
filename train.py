@@ -8,9 +8,9 @@ from sklearn.model_selection import train_test_split
 # ================================
 # === 1. 데이터 로딩 (CCXT)  ===
 # ================================
-SYMBOL = 'SOLUSDT'
+SYMBOL = 'BTCUSDT'
 TIMEFRAME = '5m'
-START_DATE = '2025-07-01T00:00:00Z'
+START_DATE = '2025-01-01T00:00:00Z'
 
 exchange = ccxt.binanceus({'options': {'defaultType': 'future'}})
 exchange.load_markets()
@@ -122,6 +122,7 @@ for i in range(WINDOW, len(data)):
     long_pnl = data['unrealized_long_pnl'].iloc[i]
     short_pnl = data['unrealized_short_pnl'].iloc[i]
     adx = data['adx'].iloc[i]
+    adx_prev = data['adx'].iloc[i-1]
 
     # 다음 스텝으로 상태 이전
     realized_pnls[i] = realized_pnls[i-1]
@@ -132,7 +133,7 @@ for i in range(WINDOW, len(data)):
     action_taken = "HOLD"
 
     # 1. 롱 포지션이 수익 중이고, 추세가 약해졌을 때
-    if long_pnl > 0 and adx < ADX_WEAK_TREND_THRESHOLD and current_long_size > 0:
+    if long_pnl > 0 and adx < ADX_WEAK_TREND_THRESHOLD and adx_prev > adx and current_long_size > 0:
         action_taken = "PARTIAL_CLOSE_LONG"
         
         # 청산할 규모
