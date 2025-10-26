@@ -246,7 +246,17 @@ else:
     print("Validation label distribution:", dict(zip(*np.unique(y_val, return_counts=True))))
 
     # 모델 학습
-    model = xgb.XGBClassifier(objective='multi:softmax', num_class=3, use_label_encoder=False, eval_metric='mlogloss')
+    model = xgb.XGBClassifier(
+        objective='multi:softmax', 
+        num_class=3, 
+        eval_metric='mlogloss',
+        n_estimators=200,
+        learning_rate=0.1,
+        max_depth=7,
+        gamma=0.1,
+        subsample=0.8,
+        use_label_encoder=False
+    )
     model.fit(X_train, y_train)
 
     accuracy = model.score(X_val, y_val)
