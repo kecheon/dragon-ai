@@ -11,7 +11,7 @@ import os
 # ====================================
 SYMBOL = 'BTCUSDT'
 TIMEFRAME = '5m'
-START_DATE = '2025-01-01T00:00:00Z'
+START_DATE = '2022-01-01T00:00:00Z'
 RAW_DATA_FILE = f"{SYMBOL}_{TIMEFRAME}_raw_data.csv"
 
 # 캐시 파일이 존재하면 파일에서 로드, 없으면 CCXT로 가져와서 저장
@@ -49,36 +49,14 @@ else:
     data.to_csv(RAW_DATA_FILE)
 
 # ===================================
-# === 2. 시뮬레이션 환경 설정      ===
+# === 2. 파라미터 설정 ===
 # ===================================
-# --- 시뮬레이션 파라미터 ---
-WINDOW = 14                 # 기술적 지표 계산을 위한 윈도우 크기
-PARTIAL_CLOSE_RATIO = 0.5   # 부분 청산 비율 (50%)
-EVALUATION_WINDOW = 12      # 청산 성과 평가 기간 (5분 * 12 = 1시간)
-SUCCESS_THRESHOLD_PCT = 0.0 # 성공적인 Exit으로 판단하는 임계값 (0보다 크면 성공)
-FAILURE_THRESHOLD_PCT = 0.0 # 실패한 Exit으로 판단하는 임계값 (0보다 작으면 실패)
-
-# --- 초기 잠금 모드 설정 ---
-# 초기 진입가 스프레드를 1.5%로 고정
+WINDOW = 14
+PARTIAL_CLOSE_RATIO = 0.5
+EVALUATION_WINDOW = 12
 initial_spread_pct = 0.015
-data['LongEntry'] = data['Close'].iloc[0] * (1 + initial_spread_pct / 2)
-data['ShortEntry'] = data['Close'].iloc[0] * (1 - initial_spread_pct / 2)
-data['Spread'] = data['LongEntry'] - data['ShortEntry']
-
-# --- 시뮬레이션 상태를 기록할 열 추가 ---
-data['unrealized_long_pnl'] = (data['Close'] - data['LongEntry']) / data['LongEntry']
-data['unrealized_short_pnl'] = (data['ShortEntry'] - data['Close']) / data['ShortEntry']
-data['total_unrealized_pnl'] = data['unrealized_long_pnl'] + data['unrealized_short_pnl']
-
-data['realized_pnl'] = 0.0
-data['long_position_size'] = 1.0  # 초기 포지션 크기를 1로 가정
-data['short_position_size'] = 1.0
-data['total_position_size'] = data['long_position_size'] + data['short_position_size']
-
-data['action'] = "HOLD"  # 각 시점의 행동 (HOLD, PARTIAL_CLOSE_LONG, PARTIAL_CLOSE_SHORT)
-data['label'] = 0      # 최종 학습 레이블 (+1, 0, -1)
-
-print("시뮬레이션 환경 설정 완료")
+LOOKBACK_PERIOD = 24
+ADX_TREND_THRESHOLD = 20
 
 # ===================================
 # === 3. 특성(Feature) 생성       ===
@@ -88,19 +66,13 @@ print("시뮬레이션 환경 설정 완료")
 data['volatility'] = data['Close'].pct_change().rolling(WINDOW).std().fillna(0)
 
 # DMI (Directional Movement Index)
-# ta.dmi가 아닌 ta.adx 함수를 사용하여 DMI 관련 지표(ADX, DMP, DMN)를 계산합니다.
 dmi_df = ta.adx(high=data['High'], low=data['Low'], close=data['Close'], length=WINDOW)
-
-# DMI 결과를 기존 데이터프레임에 병합
 data = data.join(dmi_df)
-
-# 열 이름 변경 및 결측치 처리
 data.rename(columns={
     f'ADX_{WINDOW}': 'adx',
     f'DMP_{WINDOW}': 'dmp',
     f'DMN_{WINDOW}': 'dmn'
 }, inplace=True)
-# ChainedAssignmentError 경고를 해결하기 위해 fillna 작업을 하나로 통합
 data.fillna({
     'adx': 25,
     'dmp': data['dmp'].mean(),
@@ -109,172 +81,244 @@ data.fillna({
 
 print("특성 생성 완료")
 
+
 # ===================================================
-# === 4. 시뮬레이션 및 레이블링 (Simulation & Labeling) ===
+# === 4. 모델 1 (부분 청산) 데이터 생성 (이벤트 스캐너 방식) ===
 # ===================================================
+print("\n--- Generating Data for Model 1: Partial Exit ---")
 
-print("부분 청산 시뮬레이션을 시작합니다...")
+model1_events = []
 
-# ADX 임계값. 이 값보다 낮으면 트렌드가 약하다고 판단.
-ADX_TREND_THRESHOLD = 25
+# 전체 데이터를 스캔하여 부분 청산 이벤트 탐색
+for i in range(LOOKBACK_PERIOD + WINDOW, len(data) - EVALUATION_WINDOW):
+    # --- 1. 가상 진입 설정 ---
+    entry_price = data['Close'].iloc[i - LOOKBACK_PERIOD]
+    long_entry_price = entry_price * (1 + initial_spread_pct / 2)
+    short_entry_price = entry_price * (1 - initial_spread_pct / 2)
 
-# 루프를 돌면서 상태를 업데이트하기 위한 임시 리스트 생성
-actions = data['action'].tolist()
-realized_pnls = data['realized_pnl'].tolist()
-long_sizes = data['long_position_size'].tolist()
-short_sizes = data['short_position_size'].tolist()
+    # --- 2. 현재 상태 계산 ---
+    current_price = data['Close'].iloc[i]
+    unrealized_long_pnl = (current_price - long_entry_price) # 가치 기준
+    unrealized_short_pnl = (short_entry_price - current_price) # 가치 기준
 
-# WINDOW 기간 이후부터 시뮬레이션 시작
-for i in range(WINDOW, len(data)):
-    # 이전 스텝의 상태를 가져옴
-    current_long_size = long_sizes[i-1]
-    current_short_size = short_sizes[i-1]
-    
-    # 현재 스텝의 PnL과 ADX 값
-    long_pnl = data['unrealized_long_pnl'].iloc[i]
-    short_pnl = data['unrealized_short_pnl'].iloc[i]
+    # --- 3. 부분 청산 조건 확인 ---
     adx = data['adx'].iloc[i]
-    adx_prev = data['adx'].iloc[i-1]
     plus_di = data['dmp'].iloc[i]
     minus_di = data['dmn'].iloc[i]
 
-    # 다음 스텝으로 상태 이전
-    realized_pnls[i] = realized_pnls[i-1]
-    long_sizes[i] = current_long_size
-    short_sizes[i] = current_short_size
+    action = None
+    if unrealized_long_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di < minus_di:
+        action = "PARTIAL_CLOSE_LONG"
+    elif unrealized_short_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di > minus_di:
+        action = "PARTIAL_CLOSE_SHORT"
 
-    # --- 부분 청산 조건 확인 ---
-    action_taken = "HOLD"
-
-    # 1. 롱 포지션이 수익 중이고, 추세가 약해졌을 때
-    if long_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di < minus_di and current_long_size > 0:
-        action_taken = "PARTIAL_CLOSE_LONG"
+    # --- 4. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
+    if action:
+        pnl_at_action = unrealized_long_pnl + unrealized_short_pnl
         
-        # 청산할 규모
-        close_amount = current_long_size * PARTIAL_CLOSE_RATIO
+        if action == "PARTIAL_CLOSE_LONG":
+            remaining_long_size = 1.0 - PARTIAL_CLOSE_RATIO
+            remaining_short_size = 1.0
+        else: # PARTIAL_CLOSE_SHORT
+            remaining_long_size = 1.0
+            remaining_short_size = 1.0 - PARTIAL_CLOSE_RATIO
+
+        price_at_eval = data['Close'].iloc[i + EVALUATION_WINDOW]
+        pnl_at_eval = ((price_at_eval - long_entry_price) * remaining_long_size) + \
+                      ((short_entry_price - price_at_eval) * remaining_short_size)
         
-        # 실현 손익 업데이트
-        realized_pnls[i] += long_pnl * close_amount
+        pnl_change = pnl_at_eval - pnl_at_action
         
-        # 포지션 사이즈 업데이트
-        long_sizes[i] -= close_amount
+        label = 0
+        if pnl_change > 0: label = 1
+        elif pnl_change < 0: label = -1
 
-    # 2. 숏 포지션이 수익 중이고, 추세가 약해졌을 때
-    elif short_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di > minus_di and current_short_size > 0:
-        action_taken = "PARTIAL_CLOSE_SHORT"
-        
-        # 청산할 규모
-        close_amount = current_short_size * PARTIAL_CLOSE_RATIO
-        
-        # 실현 손익 업데이트
-        realized_pnls[i] += short_pnl * close_amount
-        
-        # 포지션 사이즈 업데이트
-        short_sizes[i] -= close_amount
-        
-    actions[i] = action_taken
+        if label != 0: # 중립이 아닌 경우만 데이터로 사용
+            event = {
+                'unrealized_long_pnl': unrealized_long_pnl,
+                'unrealized_short_pnl': unrealized_short_pnl,
+                'total_unrealized_pnl': pnl_at_action,
+                'total_position_size': 2.0,
+                'volatility': data['volatility'].iloc[i],
+                'adx': adx,
+                'dmp': plus_di,
+                'dmn': minus_di,
+                'label': label
+            }
+            model1_events.append(event)
 
-# 시뮬레이션 결과를 데이터프레임에 다시 할당
-data['action'] = actions
-data['realized_pnl'] = realized_pnls
-data['long_position_size'] = long_sizes
-data['short_position_size'] = short_sizes
-data['total_position_size'] = data['long_position_size'] + data['short_position_size']
+model1_df = pd.DataFrame(model1_events)
+print(f"Found {len(model1_df)} 'PARTIAL_CLOSE' events.")
 
-print("시뮬레이션 완료. 'action' 열에 결과 기록.")
+# ===================================================
+# === 5. 모델 2 (상태 복구) 데이터 생성 (이벤트 스캐너 방식) ===
+# ===================================================
+print("\n--- Generating Data for Model 2: State Restoration ---")
 
-print("부분 청산 결과에 대한 레이블링을 시작합니다...")
+# 하이퍼파라미터: 부분 청산이 일어났다고 가정할 과거 시점
+PARTIAL_CLOSE_LOOKBACK = 24 
 
-# 전체 PnL 계산 (미실현 + 실현)
-data['total_pnl'] = data['total_unrealized_pnl'] + data['realized_pnl']
-labels = data['label'].tolist()
+model2_events = []
 
-# action이 발생한 지점의 정수 위치 인덱스를 찾음
-action_indices = data[data['action'] != 'HOLD'].index
-action_integer_indices = [data.index.get_loc(idx) for idx in action_indices]
-
-for i_loc in action_integer_indices:
-    # 평가 기간이 데이터 범위를 벗어나는지 확인
-    if i_loc + EVALUATION_WINDOW >= len(data):
-        continue
-
-    # .iloc를 사용하여 정수 위치로 데이터에 접근
-    pnl_at_action = data['total_pnl'].iloc[i_loc]
-    pnl_at_evaluation = data['total_pnl'].iloc[i_loc + EVALUATION_WINDOW]
+# 전체 데이터를 스캔하여 재진입 이벤트 탐색
+for i in range(LOOKBACK_PERIOD + PARTIAL_CLOSE_LOOKBACK + WINDOW, len(data) - EVALUATION_WINDOW):
     
-    pnl_change = pnl_at_evaluation - pnl_at_action
+    # --- 1. 가상 과거 상태 설정 ---
+    initial_entry_price = data['Close'].iloc[i - LOOKBACK_PERIOD - PARTIAL_CLOSE_LOOKBACK]
+    long_entry_price = initial_entry_price * (1 + initial_spread_pct / 2)
+    short_entry_price = initial_entry_price * (1 - initial_spread_pct / 2)
     
-    # 성과 판단 및 레이블링
-    if pnl_change > SUCCESS_THRESHOLD_PCT:
-        labels[i_loc] = 1  # 성공
-    elif pnl_change < FAILURE_THRESHOLD_PCT:
-        labels[i_loc] = -1 # 실패
+    # --- 2. 현재 시점에서 '재진입' 조건 확인 ---
+    # 두 가지 불균형 시나리오(롱이 많거나, 숏이 많거나)를 모두 고려해야 하나, 우선 숏이 더 많은 경우만 가정하여 로직 구현
+    long_size_imbalanced = 1.0 - PARTIAL_CLOSE_RATIO
+    short_size_imbalanced = 1.0
+
+    adx = data['adx'].iloc[i]
+    plus_di = data['dmp'].iloc[i]
+    minus_di = data['dmn'].iloc[i]
+
+    action = None
+    # 숏 포지션이 더 많은 상태에서, 상승 추세(숏에 불리)가 나타나면 RE_LOCK 시도
+    if adx > ADX_TREND_THRESHOLD and plus_di > minus_di:
+        action = "RE_LOCK"
+
+    # --- 3. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
+    if action:
+        current_price = data['Close'].iloc[i]
+        
+        # 'RE_LOCK'에 대한 레이블 계산 (가상 시나리오 비교)
+        unrealized_long_pnl_at_relock = (current_price - long_entry_price) * long_size_imbalanced
+        unrealized_short_pnl_at_relock = (short_entry_price - current_price) * short_size_imbalanced
+        actual_outcome = unrealized_long_pnl_at_relock + unrealized_short_pnl_at_relock
+
+        price_at_eval = data['Close'].iloc[i + EVALUATION_WINDOW]
+        hypothetical_unrealized_long_pnl = (price_at_eval - long_entry_price) * long_size_imbalanced
+        hypothetical_unrealized_short_pnl = (short_entry_price - price_at_eval) * short_size_imbalanced
+        hypothetical_outcome = hypothetical_unrealized_long_pnl + hypothetical_unrealized_short_pnl
+        
+        pnl_difference = actual_outcome - hypothetical_outcome
+        
+        label = 0
+        if pnl_difference > 0: label = 1
+        elif pnl_difference < 0: label = -1
+
+        if label != 0:
+            event = {
+                'unrealized_long_pnl': unrealized_long_pnl_at_relock,
+                'unrealized_short_pnl': unrealized_short_pnl_at_relock,
+                'total_unrealized_pnl': actual_outcome,
+                'total_position_size': long_size_imbalanced + short_size_imbalanced,
+                'volatility': data['volatility'].iloc[i],
+                'adx': adx,
+                'dmp': plus_di,
+                'dmn': minus_di,
+                'label': label
+            }
+            model2_events.append(event)
+
+model2_df = pd.DataFrame(model2_events)
+print(f"Found {len(model2_df)} 'RE_LOCK' events.")
+
+
+# ===================================
+# === 6. 모델 학습 (이진 분류) ===
+# ===================================
+
+# --- 모델 1 (부분 청산 결정 모델) 학습 ---
+print("\n--- Training Model 1: Partial Exit Model ---")
+if not model1_df.empty:
+    model1_df['label_binary'] = model1_df['label'].replace({-1: 0, 1: 1})
+    
+    print(f"{len(model1_df)}개의 데이터로 모델 1을 학습합니다.")
+
+    features = [
+        'unrealized_long_pnl', 
+        'unrealized_short_pnl',
+        'total_unrealized_pnl',
+        'total_position_size',
+        'volatility', 
+        'adx', 
+        'dmp', 
+        'dmn'
+    ]
+    X1 = model1_df[features].values
+    y1 = model1_df['label_binary'].values
+
+    if len(np.unique(y1)) < 2:
+        print("모델 1을 학습하기에 레이블 종류가 충분하지 않습니다 (성공/실패 중 하나만 존재).")
     else:
-        labels[i_loc] = 0  # 중립
+        X1_train, X1_val, y1_train, y1_val = train_test_split(X1, y1, test_size=0.2, random_state=42, stratify=y1)
 
-data['label'] = labels
+        print("Model 1 Train label distribution:", dict(zip(*np.unique(y1_train, return_counts=True))))
+        print("Model 1 Validation label distribution:", dict(zip(*np.unique(y1_val, return_counts=True))))
 
-print("레이블링 완료. 'label' 열에 결과 기록.")
+        model1 = xgb.XGBClassifier(
+            objective='binary:logistic', 
+            eval_metric='logloss',
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=7,
+            gamma=0.1,
+            subsample=0.8,
+            use_label_encoder=False
+        )
+        model1.fit(X1_train, y1_train)
 
-# ===================================
-# === 5. XGBoost 모델 학습         ===
-# ===================================
+        accuracy1 = model1.score(X1_val, y1_val)
+        print(f"Model 1 Validation Accuracy: {accuracy1:.4f}")
 
-# 학습 데이터 필터링: 'HOLD'가 아닌 action만 학습에 사용
-train_df = data[data['action'] != 'HOLD'].copy()
-
-# 레이블을 -1, 0, 1에서 0, 1, 2로 변경 (XGBoost는 0부터 시작하는 레이블을 선호)
-train_df['label_shifted'] = train_df['label'] + 1
-
-print(f"총 {len(data)}개의 데이터 중, {len(train_df)}개의 액션 데이터를 학습에 사용합니다.")
-
-# CSV 저장
-csv_file = f"{SYMBOL}_{TIMEFRAME}_strategic_exit.csv"
-train_df.to_csv(csv_file)
-print(f"CSV saved: {csv_file}")
-
-# 특성(X)과 레이블(y) 정의
-features = [
-    'unrealized_long_pnl', 
-    'unrealized_short_pnl',
-    'total_unrealized_pnl',
-    'total_position_size',
-    'volatility', 
-    'adx', 
-    'dmp', 
-    'dmn'
-]
-X = train_df[features].values
-y = train_df['label_shifted'].values
-
-# 데이터가 하나도 없는 경우를 대비
-if len(X) == 0:
-    print("학습할 데이터가 없습니다. 시뮬레이션 조건을 확인해주세요.")
+        model1_file = "strategic_exit_model.json"
+        model1.save_model(model1_file)
+        print(f"Model 1 saved: {model1_file}")
 else:
-    # 데이터 분할
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    print("모델 1을 학습할 데이터가 없습니다.")
 
-    print("Train label distribution:", dict(zip(*np.unique(y_train, return_counts=True))))
-    print("Validation label distribution:", dict(zip(*np.unique(y_val, return_counts=True))))
+# --- 모델 2 (상태 복구 모델) 학습 ---
+print("\n--- Training Model 2: State Restoration Model ---")
+if not model2_df.empty:
+    model2_df['label_binary'] = model2_df['label'].replace({-1: 0, 1: 1})
 
-    # 모델 학습
-    model = xgb.XGBClassifier(
-        objective='multi:softmax', 
-        num_class=3, 
-        eval_metric='mlogloss',
-        n_estimators=200,
-        learning_rate=0.1,
-        max_depth=7,
-        gamma=0.1,
-        subsample=0.8,
-        use_label_encoder=False
-    )
-    model.fit(X_train, y_train)
+    print(f"{len(model2_df)}개의 'RE_LOCK' 액션 데이터로 모델 2를 학습합니다.")
 
-    accuracy = model.score(X_val, y_val)
-    print(f"Validation Accuracy: {accuracy:.4f}")
+    features_m2 = [
+        'unrealized_long_pnl', 
+        'unrealized_short_pnl',
+        'total_unrealized_pnl',
+        'total_position_size',
+        'volatility', 
+        'adx', 
+        'dmp', 
+        'dmn'
+    ]
+    X2 = model2_df[features_m2].values
+    y2 = model2_df['label_binary'].values
 
-    # 모델 저장
-    model_file = "strategic_exit_model.json"
-    model.save_model(model_file)
-    print(f"XGBoost model saved: {model_file}")
+    if len(np.unique(y2)) < 2:
+        print("모델 2를 학습하기에 레이블 종류가 충분하지 않습니다 (성공/실패 중 하나만 존재).")
+    else:
+        X2_train, X2_val, y2_train, y2_val = train_test_split(X2, y2, test_size=0.2, random_state=42, stratify=y2)
+
+        print("Model 2 Train label distribution:", dict(zip(*np.unique(y2_train, return_counts=True))))
+        print("Model 2 Validation label distribution:", dict(zip(*np.unique(y2_val, return_counts=True))))
+
+        model2 = xgb.XGBClassifier(
+            objective='binary:logistic',
+            eval_metric='logloss',
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=7,
+            gamma=0.1,
+            subsample=0.8,
+            use_label_encoder=False
+        )
+        model2.fit(X2_train, y2_train)
+
+        accuracy2 = model2.score(X2_val, y2_val)
+        print(f"Model 2 Validation Accuracy: {accuracy2:.4f}")
+
+        model2_file = "state_restoration_model.json"
+        model2.save_model(model2_file)
+        print(f"Model 2 saved: {model2_file}")
+else:
+    print("모델 2를 학습할 데이터가 없습니다.")
+
