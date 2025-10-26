@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 # ================================
 SYMBOL = 'BTCUSDT'
 TIMEFRAME = '5m'
-START_DATE = '2025-10-01T00:00:00Z'
+START_DATE = '2025-01-01T00:00:00Z'
 
 exchange = ccxt.binanceus({'options': {'defaultType': 'future'}})
 exchange.load_markets()
@@ -104,7 +104,7 @@ print("특성 생성 완료")
 print("부분 청산 시뮬레이션을 시작합니다...")
 
 # ADX 임계값. 이 값보다 낮으면 트렌드가 약하다고 판단.
-ADX_WEAK_TREND_THRESHOLD = 25
+ADX_TREND_THRESHOLD = 25
 
 # 루프를 돌면서 상태를 업데이트하기 위한 임시 리스트 생성
 actions = data['action'].tolist()
@@ -123,6 +123,8 @@ for i in range(WINDOW, len(data)):
     short_pnl = data['unrealized_short_pnl'].iloc[i]
     adx = data['adx'].iloc[i]
     adx_prev = data['adx'].iloc[i-1]
+    plus_di = data['dmp'].iloc[i]
+    minus_di = data['dmn'].iloc[i]
 
     # 다음 스텝으로 상태 이전
     realized_pnls[i] = realized_pnls[i-1]
@@ -133,7 +135,7 @@ for i in range(WINDOW, len(data)):
     action_taken = "HOLD"
 
     # 1. 롱 포지션이 수익 중이고, 추세가 약해졌을 때
-    if long_pnl > 0 and adx < ADX_WEAK_TREND_THRESHOLD and adx_prev > adx and current_long_size > 0:
+    if long_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di < minus_di and current_long_size > 0:
         action_taken = "PARTIAL_CLOSE_LONG"
         
         # 청산할 규모
@@ -146,7 +148,7 @@ for i in range(WINDOW, len(data)):
         long_sizes[i] -= close_amount
 
     # 2. 숏 포지션이 수익 중이고, 추세가 약해졌을 때
-    elif short_pnl > 0 and adx < ADX_WEAK_TREND_THRESHOLD and current_short_size > 0:
+    elif short_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di > minus_di and current_short_size > 0:
         action_taken = "PARTIAL_CLOSE_SHORT"
         
         # 청산할 규모
