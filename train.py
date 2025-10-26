@@ -151,73 +151,82 @@ model1_df = pd.DataFrame(model1_events)
 print(f"Found {len(model1_df)} 'PARTIAL_CLOSE' events.")
 
 # ===================================================
-# === 5. 모델 2 (상태 복구) 데이터 생성 (이벤트 스캐너 방식) ===
+# === 5. 모델 2 (상태 복구) 데이터 생성 (이벤트 스캐너 방식, 고급 특성 추가) ===
 # ===================================================
-print("\n--- Generating Data for Model 2: State Restoration ---")
+print("\n--- Generating Data for Model 2: State Restoration (with advanced features) ---")
 
-# 하이퍼파라미터: 부분 청산이 일어났다고 가정할 과거 시점
-PARTIAL_CLOSE_LOOKBACK = 24 
+# 테스트할 불균형 지속 기간 (캔들 수)
+IMBALANCE_DURATIONS = [12, 24, 48, 96] # 1시간, 2시간, 4시간, 8시간
 
 model2_events = []
 
-# 전체 데이터를 스캔하여 재진입 이벤트 탐색
-for i in range(LOOKBACK_PERIOD + PARTIAL_CLOSE_LOOKBACK + WINDOW, len(data) - EVALUATION_WINDOW):
+# 각 불균형 지속 기간에 대해 루프 실행
+for time_in_imbalance in IMBALANCE_DURATIONS:
     
-    # --- 1. 가상 과거 상태 설정 ---
-    initial_entry_price = data['Close'].iloc[i - LOOKBACK_PERIOD - PARTIAL_CLOSE_LOOKBACK]
-    long_entry_price = initial_entry_price * (1 + initial_spread_pct / 2)
-    short_entry_price = initial_entry_price * (1 - initial_spread_pct / 2)
-    
-    # --- 2. 현재 시점에서 '재진입' 조건 확인 ---
-    # 두 가지 불균형 시나리오(롱이 많거나, 숏이 많거나)를 모두 고려해야 하나, 우선 숏이 더 많은 경우만 가정하여 로직 구현
-    long_size_imbalanced = 1.0 - PARTIAL_CLOSE_RATIO
-    short_size_imbalanced = 1.0
-
-    adx = data['adx'].iloc[i]
-    plus_di = data['dmp'].iloc[i]
-    minus_di = data['dmn'].iloc[i]
-
-    action = None
-    # 숏 포지션이 더 많은 상태에서, 상승 추세(숏에 불리)가 나타나면 RE_LOCK 시도
-    if adx > ADX_TREND_THRESHOLD and plus_di > minus_di:
-        action = "RE_LOCK"
-
-    # --- 3. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
-    if action:
-        current_price = data['Close'].iloc[i]
+    # 전체 데이터를 스캔하여 재진입 이벤트 탐색
+    start_index = LOOKBACK_PERIOD + time_in_imbalance + WINDOW
+    for i in range(start_index, len(data) - EVALUATION_WINDOW):
         
-        # 'RE_LOCK'에 대한 레이블 계산 (가상 시나리오 비교)
-        unrealized_long_pnl_at_relock = (current_price - long_entry_price) * long_size_imbalanced
-        unrealized_short_pnl_at_relock = (short_entry_price - current_price) * short_size_imbalanced
-        actual_outcome = unrealized_long_pnl_at_relock + unrealized_short_pnl_at_relock
-
-        price_at_eval = data['Close'].iloc[i + EVALUATION_WINDOW]
-        hypothetical_unrealized_long_pnl = (price_at_eval - long_entry_price) * long_size_imbalanced
-        hypothetical_unrealized_short_pnl = (short_entry_price - price_at_eval) * short_size_imbalanced
-        hypothetical_outcome = hypothetical_unrealized_long_pnl + hypothetical_unrealized_short_pnl
+        # --- 1. 가상 과거 상태 설정 ---
+        initial_entry_price = data['Close'].iloc[i - LOOKBACK_PERIOD - time_in_imbalance]
+        long_entry_price = initial_entry_price * (1 + initial_spread_pct / 2)
+        short_entry_price = initial_entry_price * (1 - initial_spread_pct / 2)
         
-        pnl_difference = actual_outcome - hypothetical_outcome
-        
-        label = 0
-        if pnl_difference > 0: label = 1
-        elif pnl_difference < 0: label = -1
+        # --- 2. 현재 시점에서 '재진입' 조건 확인 ---
+        # (우선 숏 포지션이 더 많은 경우만 가정)
+        long_size_imbalanced = 1.0 - PARTIAL_CLOSE_RATIO
+        short_size_imbalanced = 1.0
 
-        if label != 0:
-            event = {
-                'unrealized_long_pnl': unrealized_long_pnl_at_relock,
-                'unrealized_short_pnl': unrealized_short_pnl_at_relock,
-                'total_unrealized_pnl': actual_outcome,
-                'total_position_size': long_size_imbalanced + short_size_imbalanced,
-                'volatility': data['volatility'].iloc[i],
-                'adx': adx,
-                'dmp': plus_di,
-                'dmn': minus_di,
-                'label': label
-            }
-            model2_events.append(event)
+        adx = data['adx'].iloc[i]
+        plus_di = data['dmp'].iloc[i]
+        minus_di = data['dmn'].iloc[i]
+
+        action = None
+        # 숏 포지션이 더 많은 상태에서, 상승 추세(숏에 불리)가 나타나면 RE_LOCK 시도
+        if adx > ADX_TREND_THRESHOLD and plus_di > minus_di:
+            action = "RE_LOCK"
+
+        # --- 3. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
+        if action:
+            current_price = data['Close'].iloc[i]
+            
+            # 'RE_LOCK'에 대한 레이블 계산 (가상 시나리오 비교)
+            pnl_larger_pos_at_relock = (short_entry_price - current_price) * short_size_imbalanced
+            pnl_smaller_pos_at_relock = (current_price - long_entry_price) * long_size_imbalanced
+            actual_outcome = pnl_larger_pos_at_relock + pnl_smaller_pos_at_relock
+
+            price_at_eval = data['Close'].iloc[i + EVALUATION_WINDOW]
+            hypothetical_pnl_larger_pos = (short_entry_price - price_at_eval) * short_size_imbalanced
+            hypothetical_pnl_smaller_pos = (price_at_eval - long_entry_price) * long_size_imbalanced
+            hypothetical_outcome = hypothetical_pnl_larger_pos + hypothetical_pnl_smaller_pos
+            
+            pnl_difference = actual_outcome - hypothetical_outcome
+            
+            label = 0
+            if pnl_difference > 0: label = 1
+            elif pnl_difference < 0: label = -1
+
+            if label != 0:
+                event = {
+                    # 기존 특성
+                    'unrealized_long_pnl': pnl_smaller_pos_at_relock,
+                    'unrealized_short_pnl': pnl_larger_pos_at_relock,
+                    'total_unrealized_pnl': actual_outcome,
+                    'total_position_size': long_size_imbalanced + short_size_imbalanced,
+                    'volatility': data['volatility'].iloc[i],
+                    'adx': adx,
+                    'dmp': plus_di,
+                    'dmn': minus_di,
+                    # 신규 특성
+                    'time_in_imbalance': time_in_imbalance,
+                    'pnl_of_larger_position': pnl_larger_pos_at_relock,
+                    # 레이블
+                    'label': label
+                }
+                model2_events.append(event)
 
 model2_df = pd.DataFrame(model2_events)
-print(f"Found {len(model2_df)} 'RE_LOCK' events.")
+print(f"Found {len(model2_df)} 'RE_LOCK' events across {len(IMBALANCE_DURATIONS)} scenarios.")
 
 
 # ===================================
@@ -288,7 +297,9 @@ if not model2_df.empty:
         'volatility', 
         'adx', 
         'dmp', 
-        'dmn'
+        'dmn',
+        'time_in_imbalance',
+        'pnl_of_larger_position'
     ]
     X2 = model2_df[features_m2].values
     y2 = model2_df['label_binary'].values
@@ -305,8 +316,8 @@ if not model2_df.empty:
             objective='binary:logistic',
             eval_metric='logloss',
             n_estimators=200,
-            learning_rate=0.1,
-            max_depth=7,
+            learning_rate=0.15,
+            max_depth=9,
             gamma=0.1,
             subsample=0.8,
             use_label_encoder=False
