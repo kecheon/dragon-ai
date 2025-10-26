@@ -4,37 +4,49 @@ import pandas_ta as ta
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
+import os
 
-# ================================
-# === 1. 데이터 로딩 (CCXT)  ===
-# ================================
+# ====================================
+# === 1. 데이터 로딩 (캐시 우선)  ===
+# ====================================
 SYMBOL = 'BTCUSDT'
 TIMEFRAME = '5m'
 START_DATE = '2025-01-01T00:00:00Z'
+RAW_DATA_FILE = f"{SYMBOL}_{TIMEFRAME}_raw_data.csv"
 
-exchange = ccxt.binanceus({'options': {'defaultType': 'future'}})
-exchange.load_markets()
+# 캐시 파일이 존재하면 파일에서 로드, 없으면 CCXT로 가져와서 저장
+if os.path.exists(RAW_DATA_FILE):
+    print(f"'{RAW_DATA_FILE}' 파일에서 데이터를 로드합니다...")
+    data = pd.read_csv(RAW_DATA_FILE, index_col='Timestamp', parse_dates=True)
+    print(f"Total candles loaded from file: {len(data)}")
+else:
+    print(f"'{RAW_DATA_FILE}' 파일이 없습니다. CCXT에서 데이터를 가져옵니다...")
+    exchange = ccxt.binanceus({'options': {'defaultType': 'future'}})
+    exchange.load_markets()
 
-since = exchange.parse8601(START_DATE)
-all_ohlcv = []
+    since = exchange.parse8601(START_DATE)
+    all_ohlcv = []
 
-print(f"Fetching {TIMEFRAME} candles for {SYMBOL} from {START_DATE}...")
-while True:
-    try:
-        ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, since=since, limit=1000)
-        if not ohlcv:
+    print(f"Fetching {TIMEFRAME} candles for {SYMBOL} from {START_DATE}...")
+    while True:
+        try:
+            ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, since=since, limit=1000)
+            if not ohlcv:
+                break
+            last_ts = ohlcv[-1][0]
+            all_ohlcv.extend(ohlcv)
+            since = last_ts + 1
+        except Exception as e:
+            print(f"Error fetching data: {e}")
             break
-        last_ts = ohlcv[-1][0]
-        all_ohlcv.extend(ohlcv)
-        since = last_ts + 1
-    except Exception as e:
-        print(f"Error fetching data: {e}")
-        break
 
-data = pd.DataFrame(all_ohlcv, columns=['Timestamp','Open','High','Low','Close','Volume'])
-data['Timestamp'] = pd.to_datetime(data['Timestamp'], unit='ms')
-data.set_index('Timestamp', inplace=True)
-print(f"Total candles fetched: {len(data)}")
+    data = pd.DataFrame(all_ohlcv, columns=['Timestamp','Open','High','Low','Close','Volume'])
+    data['Timestamp'] = pd.to_datetime(data['Timestamp'], unit='ms')
+    data.set_index('Timestamp', inplace=True)
+    print(f"Total candles fetched: {len(data)}")
+    
+    print(f"데이터를 '{RAW_DATA_FILE}' 파일로 저장합니다...")
+    data.to_csv(RAW_DATA_FILE)
 
 # ===================================
 # === 2. 시뮬레이션 환경 설정      ===
