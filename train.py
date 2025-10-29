@@ -200,21 +200,26 @@ for time_in_imbalance in IMBALANCE_DURATIONS:
         short_entry_price = initial_entry_price * (1 - config.FIXED_SPREAD / 2)
         
         # --- 2. 현재 시점에서 '재진입' 조건 확인 ---
-        # (우선 숏 포지션이 더 많은 경우만 가정)
-        long_size_imbalanced = 1.0 - config.PARTIAL_CLOSE_RATIO
-        short_size_imbalanced = 1.0
-
         adx = data['adx'].iloc[i]
         plus_di = data['dmp'].iloc[i]
         minus_di = data['dmn'].iloc[i]
 
-        action = None
-        # 숏 포지션이 더 많은 상태에서, 상승 추세(숏에 불리)가 나타나면 RE_LOCK 시도
-        if adx > config.ADX_TREND_THRESHOLD and plus_di > minus_di:
-            action = "RE_LOCK"
+        # config.py의 함수를 사용하여 액션 결정 (양방향 모두 확인)
+        params = {
+            'adx': adx, 'plus_di': plus_di, 'minus_di': minus_di,
+            'ADX_TREND_THRESHOLD': config.ADX_TREND_THRESHOLD
+        }
+        action = config.get_model2_action_decision(params)
 
         # --- 3. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
-        if action:
+        if action is not None:
+            # 액션 타입에 따라 불균형 포지션 사이즈 설정
+            if action == "RE_LOCK_FOR_SHORT":
+                long_size_imbalanced = 1.0 - config.PARTIAL_CLOSE_RATIO
+                short_size_imbalanced = 1.0
+            elif action == "RE_LOCK_FOR_LONG":
+                long_size_imbalanced = 1.0
+                short_size_imbalanced = 1.0 - config.PARTIAL_CLOSE_RATIO
             current_price = data['Close'].iloc[i]
             
             # 'RE_LOCK'에 대한 레이블 계산 (가상 시나리오 비교)
@@ -244,6 +249,10 @@ for time_in_imbalance in IMBALANCE_DURATIONS:
                     'adx': adx,
                     'dmp': plus_di,
                     'dmn': minus_di,
+                    # EMA features
+                    'price_vs_ema_short': data['price_vs_ema_short'].iloc[i],
+                    'price_vs_ema_long': data['price_vs_ema_long'].iloc[i],
+                    'ema_cross': data['ema_cross'].iloc[i],
                     # 신규 특성
                     'time_in_imbalance': time_in_imbalance,
                     'pnl_of_larger_position': pnl_larger_pos_at_relock,
@@ -339,6 +348,10 @@ if not model2_df.empty:
         'adx', 
         'dmp', 
         'dmn',
+        # EMA features
+        'price_vs_ema_short',
+        'price_vs_ema_long',
+        'ema_cross',
         'time_in_imbalance',
         'pnl_of_larger_position'
     ]
@@ -357,15 +370,21 @@ if not model2_df.empty:
         print("Model 2 Train label distribution:", dict(zip(*np.unique(y2_train, return_counts=True))))
         print("Model 2 Validation label distribution:", dict(zip(*np.unique(y2_val, return_counts=True))))
 
+        # 클래스 불균형 처리를 위해 scale_pos_weight 계산
+        scale_pos_weight2 = np.sum(y2_train == 0) / np.sum(y2_train == 1) if np.sum(y2_train == 1) > 0 else 1
+        print(f"Model 2 scale_pos_weight: {scale_pos_weight2:.4f}")
+
+        # 최적 하이퍼파라미터 적용
         model2 = xgb.XGBClassifier(
             objective='binary:logistic',
             eval_metric='logloss',
-            n_estimators=200,
-            learning_rate=0.15,
-            max_depth=9,
-            gamma=0.1,
+            n_estimators=200,         # Tuned
+            learning_rate=0.1,        # Tuned
+            max_depth=9,              # Tuned
+            gamma=0.1,                # Tuned
             subsample=0.8,
-            use_label_encoder=False
+            use_label_encoder=False,
+            scale_pos_weight=scale_pos_weight2
         )
         model2.fit(X2_train, y2_train)
 

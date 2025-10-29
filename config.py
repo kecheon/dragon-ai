@@ -54,3 +54,25 @@ def get_action_decision(params):
     #     action = "PARTIAL_CLOSE_SHORT"
 
     return action
+
+def get_model2_action_decision(params):
+    """
+    주어진 조건에 따라 재진입(RE_LOCK) 액션을 결정합니다.
+    params: adx, plus_di, minus_di, ADX_TREND_THRESHOLD
+    """
+    adx = params['adx']
+    plus_di = params['plus_di']
+    minus_di = params['minus_di']
+    adx_threshold = params['ADX_TREND_THRESHOLD']
+
+    action = None
+
+    # 시나리오 A: 숏 포지션이 더 많을 때, 상승 추세(숏에 불리)가 나타나면 재진입 고려
+    if adx < adx_threshold and plus_di > minus_di:
+        action = "RE_LOCK_FOR_SHORT"
+
+    # 시나리오 B: 롱 포지션이 더 많을 때, 하락 추세(롱에 불리)가 나타나면 재진입 고려
+    elif adx < adx_threshold and plus_di < minus_di:
+        action = "RE_LOCK_FOR_LONG"
+        
+    return action
