@@ -3,8 +3,11 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
+
 import os
+import random
+import config
+random.seed(42)
 
 # ====================================
 # === 1. 데이터 로딩 (캐시 우선)  ===
@@ -48,36 +51,32 @@ else:
     print(f"데이터를 '{RAW_DATA_FILE}' 파일로 저장합니다...")
     data.to_csv(RAW_DATA_FILE)
 
-# ===================================
-# === 2. 파라미터 설정 ===
-# ===================================
-WINDOW = 14
-PARTIAL_CLOSE_RATIO = 0.5
-EVALUATION_WINDOW = 12
-initial_spread_pct = 0.015
-LOOKBACK_PERIOD = 24
-ADX_TREND_THRESHOLD = 20
+
 
 # ===================================
 # === 3. 특성(Feature) 생성       ===
 # ===================================
 
 # Volatility
-data['volatility'] = data['Close'].pct_change().rolling(WINDOW).std().fillna(0)
+data['volatility'] = data['Close'].pct_change().rolling(config.WINDOW).std()
+
+# EMA (Exponential Moving Average)
+ema_short = ta.ema(data['Close'], length=20)
+ema_long = ta.ema(data['Close'], length=100)
+data['price_vs_ema_short'] = data['Close'] / ema_short
+data['price_vs_ema_long'] = data['Close'] / ema_long
+data['ema_cross'] = ema_short / ema_long
 
 # DMI (Directional Movement Index)
-dmi_df = ta.adx(high=data['High'], low=data['Low'], close=data['Close'], length=WINDOW)
+dmi_df = ta.adx(high=data['High'], low=data['Low'], close=data['Close'], length=config.WINDOW)
 data = data.join(dmi_df)
 data.rename(columns={
-    f'ADX_{WINDOW}': 'adx',
-    f'DMP_{WINDOW}': 'dmp',
-    f'DMN_{WINDOW}': 'dmn'
+    f'ADX_{config.WINDOW}': 'adx',
+    f'DMP_{config.WINDOW}': 'dmp',
+    f'DMN_{config.WINDOW}': 'dmn'
 }, inplace=True)
-data.fillna({
-    'adx': 25,
-    'dmp': data['dmp'].mean(),
-    'dmn': data['dmn'].mean()
-}, inplace=True)
+# 특성 계산 후 초기 NaN 값이 있는 행들을 제거
+data.dropna(inplace=True)
 
 print("특성 생성 완료")
 
@@ -90,11 +89,13 @@ print("\n--- Generating Data for Model 1: Partial Exit ---")
 model1_events = []
 
 # 전체 데이터를 스캔하여 부분 청산 이벤트 탐색
-for i in range(LOOKBACK_PERIOD + WINDOW, len(data) - EVALUATION_WINDOW):
+for i in range(config.LOOKBACK_PERIOD + config.WINDOW, len(data) - config.EVALUATION_WINDOW):
     # --- 1. 가상 진입 설정 ---
-    entry_price = data['Close'].iloc[i - LOOKBACK_PERIOD]
-    long_entry_price = entry_price * (1 + initial_spread_pct / 2)
-    short_entry_price = entry_price * (1 - initial_spread_pct / 2)
+    # 1. 과거 특정 시점의 가격을 기준으로 삼습니다.
+    base_price = data['Close'].iloc[i - config.LOOKBACK_PERIOD]
+
+    long_entry_price = base_price * (1 + config.FIXED_SPREAD / 2)
+    short_entry_price = base_price * (1 - config.FIXED_SPREAD / 2)
 
     # --- 2. 현재 상태 계산 ---
     current_price = data['Close'].iloc[i]
@@ -106,32 +107,54 @@ for i in range(LOOKBACK_PERIOD + WINDOW, len(data) - EVALUATION_WINDOW):
     plus_di = data['dmp'].iloc[i]
     minus_di = data['dmn'].iloc[i]
 
-    action = None
-    if unrealized_long_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di < minus_di:
-        action = "PARTIAL_CLOSE_LONG"
-    elif unrealized_short_pnl > 0 and adx > ADX_TREND_THRESHOLD and plus_di > minus_di:
-        action = "PARTIAL_CLOSE_SHORT"
+    # config.py의 함수를 사용하여 액션 결정
+    params = {
+        'adx': adx, 'plus_di': plus_di, 'minus_di': minus_di,
+        'unrealized_long_pnl': unrealized_long_pnl, 'unrealized_short_pnl': unrealized_short_pnl,
+        'ADX_TREND_THRESHOLD': config.ADX_TREND_THRESHOLD
+    }
+    action = config.get_action_decision(params)
 
     # --- 4. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
     if action:
         pnl_at_action = unrealized_long_pnl + unrealized_short_pnl
         
         if action == "PARTIAL_CLOSE_LONG":
-            remaining_long_size = 1.0 - PARTIAL_CLOSE_RATIO
+            remaining_long_size = 1.0 - config.PARTIAL_CLOSE_RATIO
             remaining_short_size = 1.0
         else: # PARTIAL_CLOSE_SHORT
             remaining_long_size = 1.0
-            remaining_short_size = 1.0 - PARTIAL_CLOSE_RATIO
+            remaining_short_size = 1.0 - config.PARTIAL_CLOSE_RATIO
 
-        price_at_eval = data['Close'].iloc[i + EVALUATION_WINDOW]
-        pnl_at_eval = ((price_at_eval - long_entry_price) * remaining_long_size) + \
-                      ((short_entry_price - price_at_eval) * remaining_short_size)
+        # --- 동적 레이블링 (Triple-Barrier Method) ---
+        label = 0  # 0: 시간 종료(Timeout) 
         
-        pnl_change = pnl_at_eval - pnl_at_action
+        # PNL 변화량을 기준으로 익절/손절 라인 설정
+        profit_target = pnl_at_action + (base_price * config.PROFIT_TAKE_PCT)
+        stop_loss = pnl_at_action - (base_price * config.STOP_LOSS_PCT)
+
+        future_prices = data['Close'].iloc[i + 1 : i + 1 + config.EVALUATION_WINDOW]
         
-        label = 0
-        if pnl_change > 0: label = 1
-        elif pnl_change < 0: label = -1
+        pnl_now = pnl_at_action # 시간 종료 시 비교를 위한 초기값
+        for price in future_prices:
+            pnl_before_fee = ((price - long_entry_price) * remaining_long_size) + \
+                             ((short_entry_price - price) * remaining_short_size)
+            fee = price * config.PARTIAL_CLOSE_RATIO * config.TRANSACTION_FEE_PCT
+            pnl_now = pnl_before_fee - fee
+            
+            if pnl_now >= profit_target:
+                label = 1  # 익절
+                break
+            if pnl_now <= stop_loss:
+                label = -1  # 손절
+                break
+        
+        # 시간 종료 시 (익절/손절 라인 미도달), 마지막 가격으로 판단
+        if label == 0:
+            if pnl_now > pnl_at_action:
+                label = 1
+            elif pnl_now < pnl_at_action:
+                label = -1
 
         if label != 0: # 중립이 아닌 경우만 데이터로 사용
             event = {
@@ -143,6 +166,10 @@ for i in range(LOOKBACK_PERIOD + WINDOW, len(data) - EVALUATION_WINDOW):
                 'adx': adx,
                 'dmp': plus_di,
                 'dmn': minus_di,
+                # EMA features added
+                'price_vs_ema_short': data['price_vs_ema_short'].iloc[i],
+                'price_vs_ema_long': data['price_vs_ema_long'].iloc[i],
+                'ema_cross': data['ema_cross'].iloc[i],
                 'label': label
             }
             model1_events.append(event)
@@ -164,17 +191,17 @@ model2_events = []
 for time_in_imbalance in IMBALANCE_DURATIONS:
     
     # 전체 데이터를 스캔하여 재진입 이벤트 탐색
-    start_index = LOOKBACK_PERIOD + time_in_imbalance + WINDOW
-    for i in range(start_index, len(data) - EVALUATION_WINDOW):
+    start_index = config.LOOKBACK_PERIOD + time_in_imbalance + config.WINDOW
+    for i in range(start_index, len(data) - config.EVALUATION_WINDOW):
         
         # --- 1. 가상 과거 상태 설정 ---
-        initial_entry_price = data['Close'].iloc[i - LOOKBACK_PERIOD - time_in_imbalance]
-        long_entry_price = initial_entry_price * (1 + initial_spread_pct / 2)
-        short_entry_price = initial_entry_price * (1 - initial_spread_pct / 2)
+        initial_entry_price = data['Close'].iloc[i - config.LOOKBACK_PERIOD - time_in_imbalance]
+        long_entry_price = initial_entry_price * (1 + config.FIXED_SPREAD / 2)
+        short_entry_price = initial_entry_price * (1 - config.FIXED_SPREAD / 2)
         
         # --- 2. 현재 시점에서 '재진입' 조건 확인 ---
         # (우선 숏 포지션이 더 많은 경우만 가정)
-        long_size_imbalanced = 1.0 - PARTIAL_CLOSE_RATIO
+        long_size_imbalanced = 1.0 - config.PARTIAL_CLOSE_RATIO
         short_size_imbalanced = 1.0
 
         adx = data['adx'].iloc[i]
@@ -183,7 +210,7 @@ for time_in_imbalance in IMBALANCE_DURATIONS:
 
         action = None
         # 숏 포지션이 더 많은 상태에서, 상승 추세(숏에 불리)가 나타나면 RE_LOCK 시도
-        if adx > ADX_TREND_THRESHOLD and plus_di > minus_di:
+        if adx > config.ADX_TREND_THRESHOLD and plus_di > minus_di:
             action = "RE_LOCK"
 
         # --- 3. 이벤트 발생 시, 레이블 계산 및 데이터 기록 ---
@@ -195,7 +222,7 @@ for time_in_imbalance in IMBALANCE_DURATIONS:
             pnl_smaller_pos_at_relock = (current_price - long_entry_price) * long_size_imbalanced
             actual_outcome = pnl_larger_pos_at_relock + pnl_smaller_pos_at_relock
 
-            price_at_eval = data['Close'].iloc[i + EVALUATION_WINDOW]
+            price_at_eval = data['Close'].iloc[i + config.EVALUATION_WINDOW]
             hypothetical_pnl_larger_pos = (short_entry_price - price_at_eval) * short_size_imbalanced
             hypothetical_pnl_smaller_pos = (price_at_eval - long_entry_price) * long_size_imbalanced
             hypothetical_outcome = hypothetical_pnl_larger_pos + hypothetical_pnl_smaller_pos
@@ -248,7 +275,11 @@ if not model1_df.empty:
         'volatility', 
         'adx', 
         'dmp', 
-        'dmn'
+        'dmn',
+        # EMA features
+        'price_vs_ema_short',
+        'price_vs_ema_long',
+        'ema_cross'
     ]
     X1 = model1_df[features].values
     y1 = model1_df['label_binary'].values
@@ -256,20 +287,30 @@ if not model1_df.empty:
     if len(np.unique(y1)) < 2:
         print("모델 1을 학습하기에 레이블 종류가 충분하지 않습니다 (성공/실패 중 하나만 존재).")
     else:
-        X1_train, X1_val, y1_train, y1_val = train_test_split(X1, y1, test_size=0.2, random_state=42, stratify=y1)
+        # 시계열 데이터 분할: 시간 순서를 유지하기 위해 마지막 20%를 검증 세트로 사용
+        split_index1 = int(len(X1) * 0.8)
+        X1_train, X1_val = X1[:split_index1], X1[split_index1:]
+        y1_train, y1_val = y1[:split_index1], y1[split_index1:]
 
+        # stratify=y1 옵션이 없어졌으므로, 분할 후 레이블 분포를 확인하는 것이 중요합니다.
         print("Model 1 Train label distribution:", dict(zip(*np.unique(y1_train, return_counts=True))))
         print("Model 1 Validation label distribution:", dict(zip(*np.unique(y1_val, return_counts=True))))
 
+        # 클래스 불균형 처리를 위해 scale_pos_weight 계산
+        scale_pos_weight1 = np.sum(y1_train == 0) / np.sum(y1_train == 1)
+        print(f"Model 1 scale_pos_weight: {scale_pos_weight1:.4f}")
+
+        # 최적 하이퍼파라미터 적용
         model1 = xgb.XGBClassifier(
             objective='binary:logistic', 
             eval_metric='logloss',
-            n_estimators=200,
-            learning_rate=0.1,
-            max_depth=7,
-            gamma=0.1,
-            subsample=0.8,
-            use_label_encoder=False
+            n_estimators=100,         # Tuned
+            learning_rate=0.1,        # Tuned
+            max_depth=9,              # Tuned
+            gamma=0.3,                # Tuned
+            subsample=0.8,            # Kept original
+            use_label_encoder=False,
+            scale_pos_weight=scale_pos_weight1
         )
         model1.fit(X1_train, y1_train)
 
@@ -307,8 +348,12 @@ if not model2_df.empty:
     if len(np.unique(y2)) < 2:
         print("모델 2를 학습하기에 레이블 종류가 충분하지 않습니다 (성공/실패 중 하나만 존재).")
     else:
-        X2_train, X2_val, y2_train, y2_val = train_test_split(X2, y2, test_size=0.2, random_state=42, stratify=y2)
+        # 시계열 데이터 분할: 시간 순서를 유지하기 위해 마지막 20%를 검증 세트로 사용
+        split_index2 = int(len(X2) * 0.8)
+        X2_train, X2_val = X2[:split_index2], X2[split_index2:]
+        y2_train, y2_val = y2[:split_index2], y2[split_index2:]
 
+        # stratify=y2 옵션이 없어졌으므로, 분할 후 레이블 분포를 확인하는 것이 중요합니다.
         print("Model 2 Train label distribution:", dict(zip(*np.unique(y2_train, return_counts=True))))
         print("Model 2 Validation label distribution:", dict(zip(*np.unique(y2_val, return_counts=True))))
 
