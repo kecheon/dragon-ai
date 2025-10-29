@@ -67,6 +67,12 @@ data['price_vs_ema_short'] = data['Close'] / ema_short
 data['price_vs_ema_long'] = data['Close'] / ema_long
 data['ema_cross'] = ema_short / ema_long
 
+# Z-score of returns
+returns = data['Close'].pct_change()
+mean_returns = returns.rolling(config.WINDOW).mean()
+std_returns = returns.rolling(config.WINDOW).std()
+data['z_score'] = (returns - mean_returns) / std_returns
+
 # DMI (Directional Movement Index)
 dmi_df = ta.adx(high=data['High'], low=data['Low'], close=data['Close'], length=config.WINDOW)
 data = data.join(dmi_df)
@@ -253,6 +259,7 @@ for time_in_imbalance in IMBALANCE_DURATIONS:
                     'price_vs_ema_short': data['price_vs_ema_short'].iloc[i],
                     'price_vs_ema_long': data['price_vs_ema_long'].iloc[i],
                     'ema_cross': data['ema_cross'].iloc[i],
+                    'z_score': data['z_score'].iloc[i],
                     # 신규 특성
                     'time_in_imbalance': time_in_imbalance,
                     'pnl_of_larger_position': pnl_larger_pos_at_relock,
@@ -352,6 +359,7 @@ if not model2_df.empty:
         'price_vs_ema_short',
         'price_vs_ema_long',
         'ema_cross',
+        'z_score', # Z-score feature added
         'time_in_imbalance',
         'pnl_of_larger_position'
     ]
