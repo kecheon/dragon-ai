@@ -3,7 +3,8 @@
 # ===================================
 WINDOW = 14
 PARTIAL_CLOSE_RATIO = 0.5
-EVALUATION_WINDOW = 24
+EVALUATION_WINDOW = 24 # 레거시, 일부 로직에서 여전히 사용될 수 있음
+MAX_EVALUATION_WINDOW = 500 # 최대 시뮬레이션 추적 기간 (캔들 수)
 FIXED_SPREAD = 0.02
 LOOKBACK_PERIOD = 48
 ADX_TREND_THRESHOLD = 20
@@ -12,6 +13,7 @@ ADX_TREND_THRESHOLD = 20
 PROFIT_TAKE_PCT = 0.0046 # 익절 라인 (0.46%, 95th percentile)
 STOP_LOSS_PCT = 0.0021 # 손절 라인 (0.21%, 75th percentile)
 TRANSACTION_FEE_PCT = 0.0004 # 거래 수수료 (0.04%)
+LIQUIDATION_THRESHOLD_PCT = -0.05 # 총 증거금 대비 청산 임계값 (예: -5%)
 
 # ===================================
 # === 액션 결정 함수 ===

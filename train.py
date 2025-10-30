@@ -14,7 +14,7 @@ random.seed(42)
 # ====================================
 SYMBOL = 'BTCUSDT'
 TIMEFRAME = '5m'
-START_DATE = '2022-01-01T00:00:00Z'
+START_DATE = '2025-01-01T00:00:00Z'
 RAW_DATA_FILE = f"{SYMBOL}_{TIMEFRAME}_raw_data.csv"
 
 # 캐시 파일이 존재하면 파일에서 로드, 없으면 CCXT로 가져와서 저장
