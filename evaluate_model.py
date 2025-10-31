@@ -11,17 +11,14 @@ import seaborn as sns
 # ===================================
 # === 1. 설정 (Configuration) ===
 # ===================================
-# --- 파일 및 모델 경로 (train_v2.py와 동일해야 함) ---
 DATA_FILE = "BTCUSDT_5m_raw_data.csv"
 MODEL_FILE = "trend_model.json"
-
-# --- 트리플 배리어 라벨링 설정 (train_v2.py와 동일해야 함) ---
 PROFIT_TAKE_PCT = 0.01
 STOP_LOSS_PCT = 0.01
 TIME_BARRIER = 60
 
 # ===================================
-# === 2. 데이터 및 특성 준비 (train_v2.py에서 복사) ===
+# === 2. 데이터 및 특성 준비 ===
 # ===================================
 print("--- Loading Data and Calculating Features ---")
 try:
@@ -44,13 +41,19 @@ def calculate_features(df):
     dmi_df = ta.adx(high=df["High"], low=df["Low"], close=df["Close"], length=config.WINDOW)
     df = df.join(dmi_df)
     df.rename(columns={f"ADX_{config.WINDOW}": "adx", f"DMP_{config.WINDOW}": "dmp", f"DMN_{config.WINDOW}": "dmn"}, inplace=True)
+
+    MOMENTUM_PERIOD = 10
+    df["price_momentum"] = df["Close"].pct_change(periods=MOMENTUM_PERIOD)
+    df["volatility_momentum"] = df["volatility"].pct_change(periods=MOMENTUM_PERIOD)
+    df["adx_momentum"] = df["adx"].pct_change(periods=MOMENTUM_PERIOD)
+    
     return df
 
 data = calculate_features(data)
-data.dropna(inplace=True)
+print("Features calculated.")
 
 # =====================================================
-# === 3. 학습 데이터 생성 (train_v2.py에서 복사) ===
+# === 3. 학습 데이터 생성 ===
 # =====================================================
 print("--- Generating Labels for Evaluation ---")
 labels = []
@@ -73,35 +76,37 @@ for i in range(len(data) - TIME_BARRIER):
 features_df = data.iloc[:-TIME_BARRIER].copy()
 features_df["label"] = labels
 
+# 무한대(inf) 값을 NaN으로 변환 후, 모든 결측치(NaN) 제거
+features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+features_df.dropna(inplace=True)
+
 # ===================================
 # === 4. 모델 로딩 및 평가 준비 ===
 # ===================================
 print("--- Loading Model and Preparing Test Data ---")
-# 특성과 라벨 분리
-feature_columns = ["volatility", "adx", "dmp", "dmn", "price_vs_ema_short", "price_vs_ema_long", "ema_cross", "z_score"]
+feature_columns = [
+    "volatility", "adx", "dmp", "dmn", 
+    "price_vs_ema_short", "price_vs_ema_long", "ema_cross", "z_score",
+    "price_momentum", "volatility_momentum", "adx_momentum"
+]
 X = features_df[feature_columns]
 y = features_df["label"].replace({-1: 2})
 
-# 데이터 분할 (train_v2.py와 동일한 random_state 사용)
 _, X_val, _, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-# 모델 로드
 model = xgb.XGBClassifier()
 model.load_model(MODEL_FILE)
 
-# 테스트 데이터 예측
 y_pred = model.predict(X_val)
 
 # ===================================
 # === 5. 분류 성능 평가 ===
 # ===================================
 print("\n--- 1. Classification Performance Metrics ---")
-accuracy = accuracy_score(y_val, y_pred)
-print(f"Accuracy: {accuracy:.4f}")
+print(f"Accuracy: {accuracy_score(y_val, y_pred):.4f}")
 print("\nClassification Report:")
 print(classification_report(y_val, y_pred, target_names=["Neutral (0)", "Buy (1)", "Sell (2)"]))
 
-# 혼동 행렬 시각화
 print("Generating Confusion Matrix plot...")
 cm = confusion_matrix(y_val, y_pred)
 plt.figure(figsize=(8, 6))
@@ -120,16 +125,12 @@ total_trades = 0
 wins = 0
 pnl = 0
 
-# y_pred와 y_val을 순회하며 가상 거래 시뮬레이션
 for pred, actual in zip(y_pred, y_val):
-    # 거래 신호가 발생한 경우 (중립 제외)
     if pred != 0:
         total_trades += 1
-        # 예측 성공 (Buy 예측 -> 실제 Buy 또는 Sell 예측 -> 실제 Sell)
         if pred == actual:
             wins += 1
             pnl += PROFIT_TAKE_PCT
-        # 예측 실패
         else:
             pnl -= STOP_LOSS_PCT
 
