@@ -33,5 +33,7 @@ tqdm==4.67.1
 typing_extensions==4.15.0
 tzdata==2025.2
 urllib3==2.5.0
-xgboost==3.0.5
+xgboost==1.7.6
 yarl==1.22.0
+matplotlib
+seaborn
