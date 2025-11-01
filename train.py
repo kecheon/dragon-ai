@@ -12,7 +12,7 @@ random.seed(42)
 # ====================================
 # === 1. 데이터 로딩 (캐시 우선)  ===
 # ====================================
-SYMBOL = 'BTCUSDT'
+SYMBOL = 'ETHUSDT'
 TIMEFRAME = '5m'
 START_DATE = '2025-01-01T00:00:00Z'
 RAW_DATA_FILE = f"{SYMBOL}_{TIMEFRAME}_raw_data.csv"

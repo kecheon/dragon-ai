@@ -3,20 +3,20 @@ import numpy as np
 import xgboost as xgb
 import pandas_ta as ta
 import config
-from sklearn.model_selection import train_test_split
+
 
 # ===================================
 # === 1. 설정 (Configuration) ===
 # ===================================
 # --- 파일 및 모델 경로 ---
-DATA_FILE = "BTCUSDT_5m_raw_data.csv"
+DATA_FILE = "data.csv"
 MODEL_FILE = "trend_model.json"
 
 # --- 새로운 학습 파라미터 ---
 # 트리플 배리어 라벨링 설정
 PROFIT_TAKE_PCT = 0.01
 STOP_LOSS_PCT = 0.01
-TIME_BARRIER = 60
+TIME_BARRIER = 120
 
 # ===================================
 # === 2. 데이터 및 특성 준비 ===
@@ -101,8 +101,10 @@ feature_columns = [
 X = features_df[feature_columns]
 y = features_df["label"].replace({-1: 2})
 
-# 데이터 분할
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+# 데이터 분할 (시간순)
+split_index = int(len(X) * 0.8)
+X_train, X_val = X.iloc[:split_index], X.iloc[split_index:]
+y_train, y_val = y.iloc[:split_index], y.iloc[split_index:]
 
 print("Train data shape:", X_train.shape)
 print("Validation data shape:", X_val.shape)
@@ -111,12 +113,12 @@ print("Validation data shape:", X_val.shape)
 model_v2 = xgb.XGBClassifier(
     objective="multi:softmax",
     num_class=3,
-    colsample_bytree=0.8909,
-    gamma=0.1572,
-    learning_rate=0.1117,
-    max_depth=7,
-    n_estimators=330,
-    subsample=0.8231,
+    colsample_bytree=0.8852444528883149,
+    gamma=0.30582658024414044,
+    learning_rate=0.011413261043943482,
+    max_depth=3,
+    n_estimators=148,
+    subsample=0.8574323980775167,
     use_label_encoder=False,
     eval_metric="mlogloss",
 )

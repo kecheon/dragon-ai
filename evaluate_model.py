@@ -3,7 +3,7 @@ import numpy as np
 import xgboost as xgb
 import pandas_ta as ta
 import config
-from sklearn.model_selection import train_test_split
+
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -11,11 +11,11 @@ import seaborn as sns
 # ===================================
 # === 1. 설정 (Configuration) ===
 # ===================================
-DATA_FILE = "BTCUSDT_5m_raw_data.csv"
+DATA_FILE = "data.csv"
 MODEL_FILE = "trend_model.json"
 PROFIT_TAKE_PCT = 0.01
 STOP_LOSS_PCT = 0.01
-TIME_BARRIER = 60
+TIME_BARRIER = 120
 
 # ===================================
 # === 2. 데이터 및 특성 준비 ===
@@ -92,7 +92,10 @@ feature_columns = [
 X = features_df[feature_columns]
 y = features_df["label"].replace({-1: 2})
 
-_, X_val, _, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+# 데이터 분할 (시간순) - 학습에 사용되지 않은 마지막 20%를 평가 데이터로 사용
+split_index = int(len(X) * 0.8)
+X_val = X.iloc[split_index:]
+y_val = y.iloc[split_index:]
 
 model = xgb.XGBClassifier()
 model.load_model(MODEL_FILE)

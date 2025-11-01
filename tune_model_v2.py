@@ -3,13 +3,13 @@ import numpy as np
 import xgboost as xgb
 import pandas_ta as ta
 import config
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from scipy.stats import uniform, randint
 
 # ===================================
 # === 1. 설정 (Configuration) ===
 # ===================================
-DATA_FILE = "BTCUSDT_5m_raw_data.csv"
+DATA_FILE = "data.csv"
 PROFIT_TAKE_PCT = 0.01
 STOP_LOSS_PCT = 0.01
 TIME_BARRIER = 60
@@ -84,8 +84,11 @@ feature_columns = [
 X = features_df[feature_columns]
 y = features_df["label"].replace({-1: 2})
 
-# 데이터의 일부만 사용하여 튜닝 시간 단축 (예: 25%)
-_, X_sample, _, y_sample = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+# 데이터의 일부만 사용하여 튜닝 시간 단축 (예: 앞 50%)
+# TimeSeriesSplit을 사용하면 초기 학습 데이터가 적으므로 샘플을 늘리는 것이 안정적입니다.
+sample_size = int(len(X) * 0.50)
+X_sample = X.iloc[:sample_size]
+y_sample = y.iloc[:sample_size]
 
 # 탐색할 하이퍼파라미터 공간 정의
 param_dist = {
@@ -105,10 +108,13 @@ model = xgb.XGBClassifier(
     eval_metric="mlogloss"
 )
 
+# 시계열 교차 검증 설정 (Walk-forward 방식)
+tscv = TimeSeriesSplit(n_splits=3)
+
 # RandomizedSearchCV 설정
-# n_iter: 시도할 조합 수, cv: 교차 검증 폴드 수
+# n_iter: 시도할 조합 수, cv: 교차 검증 분할기
 random_search = RandomizedSearchCV(
-    model, param_distributions=param_dist, n_iter=25, cv=3,
+    model, param_distributions=param_dist, n_iter=25, cv=tscv,
     scoring='f1_weighted', n_jobs=-1, random_state=42, verbose=3
 )
 
