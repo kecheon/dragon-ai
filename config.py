@@ -18,6 +18,28 @@ LIQUIDATION_THRESHOLD_PCT = -0.05 # 총 증거금 대비 청산 임계값 (예: 
 # ===================================
 # === 액션 결정 함수 ===
 # ===================================
+def get_action_decision_DMI(params):
+    """
+    params: adx, plus_di, minus_di, unrealized_long_pnl, unrealized_short_pnl, ADX_TREND_THRESHOLD
+    """
+    
+    # 필요한 값들을 params 딕셔너리에서 추출
+    adx = params['adx']
+    plus_di = params['plus_di']
+    minus_di = params['minus_di']
+    adx_threshold = params['ADX_TREND_THRESHOLD']
+
+    action = None
+
+    # --- 현재 활성화된 전략 ---
+    # 설명: ADX가 임계값 '이상'이고, DMI 교차가 발생할 때 
+    if adx > adx_threshold and plus_di < minus_di:
+        action = "ENTER_LONG"
+    elif adx > adx_threshold and plus_di > minus_di:
+        action = "ENTER_SHORT"
+    
+    return action
+
 def get_action_decision(params):
     """
     주어진 조건에 따라 부분 청산 액션을 결정합니다.

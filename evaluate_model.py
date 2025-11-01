@@ -29,11 +29,11 @@ except FileNotFoundError:
 
 def calculate_features(df):
     df["volatility"] = df["Close"].pct_change().rolling(config.WINDOW).std()
-    ema_short = ta.ema(df["Close"], length=20)
-    ema_long = ta.ema(df["Close"], length=100)
-    df["price_vs_ema_short"] = df["Close"] / ema_short
-    df["price_vs_ema_long"] = df["Close"] / ema_long
-    df["ema_cross"] = ema_short / ema_long
+    # ema_short = ta.ema(df["Close"], length=20)
+    # ema_long = ta.ema(df["Close"], length=100)
+    # df["price_vs_ema_short"] = df["Close"] / ema_short
+    # df["price_vs_ema_long"] = df["Close"] / ema_long
+    # df["ema_cross"] = ema_short / ema_long
     returns = df["Close"].pct_change()
     mean_returns = returns.rolling(config.WINDOW).mean()
     std_returns = returns.rolling(config.WINDOW).std()
@@ -85,8 +85,8 @@ features_df.dropna(inplace=True)
 # ===================================
 print("--- Loading Model and Preparing Test Data ---")
 feature_columns = [
-    "volatility", "adx", "dmp", "dmn", 
-    "price_vs_ema_short", "price_vs_ema_long", "ema_cross", "z_score",
+    "adx", "dmp", "dmn", 
+    "z_score",
     "price_momentum", "volatility_momentum", "adx_momentum"
 ]
 X = features_df[feature_columns]

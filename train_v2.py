@@ -17,6 +17,7 @@ MODEL_FILE = "trend_model.json"
 PROFIT_TAKE_PCT = 0.01
 STOP_LOSS_PCT = 0.01
 TIME_BARRIER = 120
+MOMENTUM_PERIOD = 10
 
 # ===================================
 # === 2. 데이터 및 특성 준비 ===
@@ -33,11 +34,11 @@ except FileNotFoundError:
 def calculate_features(df):
     # 기존 특성
     df["volatility"] = df["Close"].pct_change().rolling(config.WINDOW).std()
-    ema_short = ta.ema(df["Close"], length=20)
-    ema_long = ta.ema(df["Close"], length=100)
-    df["price_vs_ema_short"] = df["Close"] / ema_short
-    df["price_vs_ema_long"] = df["Close"] / ema_long
-    df["ema_cross"] = ema_short / ema_long
+    # ema_short = ta.ema(df["Close"], length=20)
+    # ema_long = ta.ema(df["Close"], length=100)
+    # df["price_vs_ema_short"] = df["Close"] / ema_short
+    # df["price_vs_ema_long"] = df["Close"] / ema_long
+    # df["ema_cross"] = ema_short / ema_long
     returns = df["Close"].pct_change()
     mean_returns = returns.rolling(config.WINDOW).mean()
     std_returns = returns.rolling(config.WINDOW).std()
@@ -47,7 +48,6 @@ def calculate_features(df):
     df.rename(columns={f"ADX_{config.WINDOW}": "adx", f"DMP_{config.WINDOW}": "dmp", f"DMN_{config.WINDOW}": "dmn"}, inplace=True)
 
     # === 새로운 동적/모멘텀 특성 추가 ===
-    MOMENTUM_PERIOD = 10
     df["price_momentum"] = df["Close"].pct_change(periods=MOMENTUM_PERIOD)
     df["volatility_momentum"] = df["volatility"].pct_change(periods=MOMENTUM_PERIOD)
     df["adx_momentum"] = df["adx"].pct_change(periods=MOMENTUM_PERIOD)
@@ -94,8 +94,8 @@ print("--- Training New Trend Model (Multi-class) ---")
 
 # 특성과 라벨 분리
 feature_columns = [
-    "volatility", "adx", "dmp", "dmn", 
-    "price_vs_ema_short", "price_vs_ema_long", "ema_cross", "z_score",
+    "adx", "dmp", "dmn", 
+    "z_score",
     "price_momentum", "volatility_momentum", "adx_momentum"
 ]
 X = features_df[feature_columns]
