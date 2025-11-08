@@ -12,9 +12,9 @@ INITIAL_POSITION_SIZE = 1.0
 FIXED_SPREAD = 0.02
 LOOKBACK_PERIOD = 96
 SIMULATION_WINDOW = 288
-# 새로운 시장 상황 트리거 임계값
-ATR_SPIKE_MULTIPLIER = 1.5 # 기준 ATR 대비 1.5배 이상 급등 시
-ADX_TREND_THRESHOLD = 25.0 # ADX 25 이상일 때 강한 추세로 판단
+# 새로운 시장 상황 트리거 임계값 (DMI 기반)
+ADX_TRIGGER_THRESHOLD = 25.0 # ADX가 이 값 이상일 때 추세 강하다고 판단
+DMI_CROSSOVER_THRESHOLD = 0 # +DI와 -DI의 교차 또는 우위 판단 기준 (0이면 단순 교차)
 
 def run_simulation(symbol: str):
     """
@@ -27,13 +27,15 @@ def run_simulation(symbol: str):
         print("데이터가 없어 시뮬레이션을 중단합니다.")
         return
 
-    data.ta.atr(length=14, append=True)
-    data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
-    
-    # ADX/DMI 계산
+    # ADX/DMI 및 변동성(ATR) 지표 계산
     dmi_df = data.ta.adx(length=14)
     data = data.join(dmi_df)
-    data.rename(columns={'ADX_14': 'adx'}, inplace=True) # 트리거에 ADX만 사용
+    data.rename(columns={'ADX_14': 'adx', 'DMP_14': 'plus_di', 'DMN_14': 'minus_di'}, inplace=True)
+
+    data.ta.atr(length=14, append=True)
+    data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
+    data['atr_sma'] = data['atr'].rolling(window=50).mean() # ATR의 50주기 이동평균
+
 
     data.dropna(inplace=True)
     
@@ -65,23 +67,30 @@ def run_simulation(symbol: str):
             current_step = i + j
             market_price = data['Close'].iloc[current_step]
             
-            # 1. 방어 로직 트리거 조건 (새로운 로직)
-            atr_now = data['atr'].iloc[current_step]
-            atr_base = data['atr'].iloc[i]
+            # 1. 방어 로직 트리거 조건 (DMI + 변동성 필터)
             adx_now = data['adx'].iloc[current_step]
+            plus_di_now = data['plus_di'].iloc[current_step]
+            minus_di_now = data['minus_di'].iloc[current_step]
+            atr_now = data['atr'].iloc[current_step]
+            atr_sma_now = data['atr_sma'].iloc[current_step]
 
-            trigger_activated = False
-            if atr_now > atr_base * ATR_SPIKE_MULTIPLIER:
-                trigger_activated = True
-            elif adx_now > ADX_TREND_THRESHOLD:
-                trigger_activated = True
+            # 추세 조건: ADX가 임계값 이상이고, +DI와 -DI가 교차한 상태
+            is_trending = False
+            if adx_now > ADX_TRIGGER_THRESHOLD:
+                if (plus_di_now > minus_di_now) or (minus_di_now > plus_di_now):
+                    is_trending = True
+            
+            # 변동성 조건: 현재 ATR이 ATR의 이동평균보다 큰 상태
+            is_volatile = atr_now > atr_sma_now
+
+            trigger_activated = is_trending and is_volatile
 
             if trigger_activated:
                 acct_state = AccountState(
-                    u_loss=0, margin_usage=0.5,
-                    atr_now=atr_now, atr_base=atr_base
+                    u_loss=0, margin_usage=0.5
                 )
-                status = strategy.determine_next_action(long_pos, short_pos, acct_state, market_price)
+                status = strategy.determine_next_action(long_pos, short_pos, acct_state, market_price,
+                                                      plus_di_now, minus_di_now, adx_now)
             else:
                 status = "HOLD"
 

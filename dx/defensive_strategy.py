@@ -32,8 +32,6 @@ class Position:
 class AccountState:
     u_loss: float
     margin_usage: float
-    atr_now: float
-    atr_base: float
 
 @dataclass
 class SimulationResult:
@@ -93,52 +91,87 @@ class DynamicHedgeStrategy:
             return StrategyMode.LOCKED
         return StrategyMode.IMBALANCED
 
-    def determine_next_action(self, long_pos: Position, short_pos: Position, acct: AccountState, market_price: float) -> str:
-        """상태에 따라 다음 행동을 결정하는 메인 로직 함수"""
-        # 1. 종료 조건 우선 확인
-        current_spread = abs(long_pos.entry_price - short_pos.entry_price)
-        if current_spread < self.config.SpreadExitThreshold:
-            self.log(f"EXIT: 스프레드 목표({self.config.SpreadExitThreshold:.4f}) 달성 (현재: {current_spread:.4f}). 포지션 동시 청산.")
-            return "EXIT_SPREAD_TARGET_MET"
+    def execute_partial_close(self, pos: Position, q_to_close: float, market_price: float) -> float:
+        """지정된 수량만큼 포지션을 부분 청산하고 실현 손익을 반환"""
+        # 부분 청산을 위한 예상 체결가는 반대 방향의 슬리피지를 적용
+        exec_price = self.get_est_exec_price("SHORT" if pos.side == "LONG" else "LONG", market_price)
+        realized_pnl = (exec_price - pos.entry_price) * q_to_close if pos.side == "LONG" else (pos.entry_price - exec_price) * q_to_close
+        pos.size -= q_to_close
+        self.log(f"  => 부분 청산 실행: {pos.side} {q_to_close:.4f} 계약 청산. 실현 손익: {realized_pnl:.4f}, 남은 수량: {pos.size:.4f}")
+        return realized_pnl
 
+    def determine_next_action(self, long_pos: Position, short_pos: Position, acct: AccountState, market_price: float,
+                              plus_di_now: float, minus_di_now: float, adx_now: float) -> str:
+        """상태에 따라 다음 행동을 결정하는 메인 로직 함수"""
         total_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
                     ((short_pos.entry_price - market_price) * short_pos.size)
+        current_mode = self._get_current_mode(long_pos, short_pos)
+        current_spread = abs(long_pos.entry_price - short_pos.entry_price)
 
-        is_imbalanced = abs(long_pos.size - short_pos.size) > 1e-9
-        if is_imbalanced and total_pnl > 0:
+        # 1. 종료 조건 검사
+        if current_mode == StrategyMode.IMBALANCED and total_pnl > 0:
             self.log(f"EXIT: 불균형 상태에서 수익({total_pnl:.4f}) 전환. 포지션 동시 청산.")
             return "EXIT_PROFIT_TARGET_MET"
+        if current_spread < self.config.SpreadExitThreshold and total_pnl > 0:
+            self.log(f"EXIT: 스프레드 목표({self.config.SpreadExitThreshold:.4f}) 달성 및 수익 발생. 포지션 동시 청산.")
+            return "EXIT_SPREAD_TARGET_MET"
 
-        if total_pnl >= 0:
-            return "NO_ACTION_PROFITABLE"
+        # 2. 행동 결정 (부분 청산 우선)
+        # 2a. 부분 청산 조건 확인
+        long_pnl_per_unit = market_price - long_pos.entry_price
+        short_pnl_per_unit = short_pos.entry_price - market_price
 
-        # 2. 최적 행동 탐색
-        loss_pos, other_pos = (long_pos, short_pos) if ((market_price - long_pos.entry_price) * long_pos.size) < ((short_pos.entry_price - market_price) * short_pos.size) else (short_pos, long_pos)
-        # self.log(f"방어 로직 발동. 손실측: {loss_pos.side}, 수익측: {other_pos.side}")
+        # 수익 중인 롱 포지션에 하락 추세(불리한 추세)가 형성된 경우
+        if long_pnl_per_unit > 0 and minus_di_now > plus_di_now:
+            q_to_close = long_pos.size * 0.5  # 50% 부분 청산
+            if q_to_close > 1e-9: # 청산할 물량이 있을 경우
+                self.execute_partial_close(long_pos, q_to_close, market_price)
+                return "ACTION_PARTIAL_CLOSE_LONG"
 
+        # 수익 중인 숏 포지션에 상승 추세(불리한 추세)가 형성된 경우
+        if short_pnl_per_unit > 0 and plus_di_now > minus_di_now:
+            q_to_close = short_pos.size * 0.5  # 50% 부분 청산
+            if q_to_close > 1e-9:
+                self.execute_partial_close(short_pos, q_to_close, market_price)
+                return "ACTION_PARTIAL_CLOSE_SHORT"
+
+        # 2b. 부분 청산 조건이 아닐 경우, 물타기(Averaging) 고려
         valid_actions: List[Dict[str, Any]] = []
+        pos_to_avg: Position
+        other_pos_entry: float
+        action_type: str = "NO_ACTION"
 
-        # 시뮬레이션 1: 손실 포지션 물타기
-        for q in self.propose_qs(loss_pos):
-            sim_res = self.simulate_averaging(loss_pos, q, self.get_est_exec_price(loss_pos.side, market_price), other_pos.entry_price)
-            if sim_res.dS < 0 and self.meets_financial_criteria(sim_res, acct):
-                valid_actions.append({'type': 'AVG_LOSER', 'q': q, 'dS': sim_res.dS, 'pos_to_avg': loss_pos})
-                # self.log(f"  - 유효 행동 발견: 손실측 물타기 (q={q:.4f}, 예상 dS={sim_res.dS:.4f})")
+        if current_mode == StrategyMode.LOCKED:
+            if plus_di_now > minus_di_now:
+                pos_to_avg, other_pos_entry, action_type = long_pos, short_pos.entry_price, "AVG_LONG_TREND"
+            elif minus_di_now > plus_di_now:
+                pos_to_avg, other_pos_entry, action_type = short_pos, long_pos.entry_price, "AVG_SHORT_TREND"
+            else:
+                return "NO_ACTION_LOCKED_NO_TREND"
 
-        # 시뮬레이션 2: 수익 포지션 불타기
-        for q in self.propose_qs(other_pos):
-            sim_res = self.simulate_averaging(other_pos, q, self.get_est_exec_price(other_pos.side, market_price), loss_pos.entry_price)
-            if sim_res.dS < 0 and self.meets_financial_criteria(sim_res, acct):
-                valid_actions.append({'type': 'AVG_WINNER', 'q': q, 'dS': sim_res.dS, 'pos_to_avg': other_pos})
-                # self.log(f"  - 유효 행동 발견: 수익측 불타기 (q={q:.4f}, 예상 dS={sim_res.dS:.4f})")
+            for q in self.propose_qs(pos_to_avg):
+                sim_res = self.simulate_averaging(pos_to_avg, q, self.get_est_exec_price(pos_to_avg.side, market_price), other_pos_entry)
+                if self.meets_financial_criteria(sim_res, acct):
+                    valid_actions.append({'type': action_type, 'q': q, 'dS': sim_res.dS, 'pos_to_avg': pos_to_avg})
 
-        # 3. 행동 선택 및 실행
+        elif current_mode == StrategyMode.IMBALANCED:
+            if total_pnl <= 0: # 불균형 모드에서는 손실일 때만 물타기 고려
+                if long_pos.size < short_pos.size:
+                    pos_to_avg, other_pos_entry, action_type = long_pos, short_pos.entry_price, "AVG_BALANCE_LONG"
+                elif short_pos.size < long_pos.size:
+                    pos_to_avg, other_pos_entry, action_type = short_pos, long_pos.entry_price, "AVG_BALANCE_SHORT"
+                else:
+                    return "NO_ACTION_IMBALANCED_ALMOST_LOCKED"
+
+                for q in self.propose_qs(pos_to_avg):
+                    sim_res = self.simulate_averaging(pos_to_avg, q, self.get_est_exec_price(pos_to_avg.side, market_price), other_pos_entry)
+                    if sim_res.dS < 0 and self.meets_financial_criteria(sim_res, acct):
+                        valid_actions.append({'type': action_type, 'q': q, 'dS': sim_res.dS, 'pos_to_avg': pos_to_avg})
+
+        # 3. 물타기 행동 선택 및 실행
         if not valid_actions:
-            # self.log("  - 유효한 스프레드 감소 행동을 찾지 못했습니다.")
             return "NO_VALID_ACTION"
 
         best_action = min(valid_actions, key=lambda x: x['dS'])
-        # self.log(f"  -> 최적 행동 선택: {best_action['type']}")
-
         self.execute_averaging(best_action['pos_to_avg'], best_action['q'], market_price)
         return f"ACTION_{best_action['type']}"
