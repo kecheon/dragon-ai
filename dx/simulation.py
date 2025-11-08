@@ -5,11 +5,11 @@ from tqdm import tqdm
 
 # 우리가 만든 모듈들
 from data_loader import load_price_data
-from defensive_strategy import StrategyConfig, Position, AccountState, DynamicHedgeStrategy
+from defensive_strategy import StrategyConfig, Position, AccountState, DynamicHedgeStrategy, StrategyMode
 
 # 시뮬레이션을 위한 글로벌 설정 (트리거 조건 추가)
 INITIAL_POSITION_SIZE = 1.0
-FIXED_SPREAD = 0.05 # 왜 이값이 클수록 성과가  좋게 나오냐? 넉넉한 스프레드가 있어야 안심하고 물타기 되는 건가
+FIXED_SPREAD = 0.02 # 왜 이값이 클수록 성과가  좋게 나오냐? 넉넉한 스프레드가 있어야 안심하고 물타기 되는 건가
 # 0.01 5891/3626
 # 0.02 5958/3557
 # 0.03 6173/3344
@@ -70,6 +70,7 @@ def run_simulation(symbol: str):
         
         final_pnl_strategy = None
         status = "HOLD"
+        balancing_attempts = 0 # 균형화 시도 횟수 초기화
 
         for j in range(SIMULATION_WINDOW):
             current_step = i + j
@@ -78,13 +79,9 @@ def run_simulation(symbol: str):
             # 1. 방어 로직 트리거 조건 (DMI + 변동성 필터)
             adx_now = data['adx'].iloc[current_step]
             plus_di_now = data['plus_di'].iloc[current_step]
-            plus_di_last = data['plus_di'].iloc[current_step-1]
             minus_di_now = data['minus_di'].iloc[current_step]
-            minus_di_last = data['minus_di'].iloc[current_step-1]
             atr_now = data['atr'].iloc[current_step]
-            atr_last = data['atr'].iloc[current_step-1]
             atr_sma_now = data['atr_sma'].iloc[current_step]
-            atr_sma_last = data['atr_sma'].iloc[current_step-1]
 
             # 추세 조건: ADX가 임계값 이상이고, +DI와 -DI가 교차한 상태
             is_trending = False
@@ -93,17 +90,26 @@ def run_simulation(symbol: str):
                     is_trending = True
             
             # 변동성 조건: 현재 ATR이 ATR의 이동평균보다 큰 상태
-            # not relavant
             is_volatile = atr_now > atr_sma_now 
 
             trigger_activated = is_trending and is_volatile
 
             if trigger_activated:
+                # 행동 전 상태 저장
+                mode_before_action = strategy._get_current_mode(long_pos, short_pos)
+
                 acct_state = AccountState(
                     u_loss=0, margin_usage=0.5
                 )
                 status = strategy.determine_next_action(long_pos, short_pos, acct_state, market_price,
-                                                      plus_di_now, minus_di_now, adx_now)
+                                                      plus_di_now, minus_di_now, adx_now, balancing_attempts)
+                
+                # 행동 후 상태 변화 감지 및 카운터 증가
+                mode_after_action = strategy._get_current_mode(long_pos, short_pos)
+                if mode_before_action == StrategyMode.IMBALANCED and mode_after_action == StrategyMode.LOCKED:
+                    balancing_attempts += 1
+                    print(f"  - 균형화 성공. 시도 횟수: {balancing_attempts}")
+
             else:
                 status = "HOLD"
 
