@@ -1,5 +1,11 @@
 from dataclasses import dataclass
 from typing import List, Dict, Any
+from enum import Enum, auto
+
+# --- 전략 모드 정의 ---
+class StrategyMode(Enum):
+    LOCKED = auto()      # 포지션 수량이 동일한 상태 (잠금 모드)
+    IMBALANCED = auto()  # 포지션 수량이 다른 상태 (불균형 모드)
 
 # --- 최종 전략 설정 ---
 @dataclass
@@ -37,7 +43,7 @@ class SimulationResult:
     d_margin: float
 
 # --- 최종 전략 클래스 ---
-class DefensiveStrategy:
+class DynamicHedgeStrategy:
     def __init__(self, config: StrategyConfig, logger=print):
         self.config = config
         self.log = logger
@@ -80,8 +86,15 @@ class DefensiveStrategy:
         pos.size = new_size
         # self.log(f"  => 실행: {pos.side}에 {total_q:.4f} 추가. 새 진입가: {pos.entry_price:.4f}, 새 크기: {pos.size:.4f}")
 
-    def defensive_loop_step(self, long_pos: Position, short_pos: Position, acct: AccountState, market_price: float) -> str:
-        """동적 최적 행동 선택 로직이 포함된 메인 루프 함수"""
+    def _get_current_mode(self, long_pos: Position, short_pos: Position) -> StrategyMode:
+        """포지션 수량을 비교하여 현재 전략 모드를 반환"""
+        # 부동소수점 비교를 위해 작은 허용 오차(epsilon) 사용
+        if abs(long_pos.size - short_pos.size) < 1e-9:
+            return StrategyMode.LOCKED
+        return StrategyMode.IMBALANCED
+
+    def determine_next_action(self, long_pos: Position, short_pos: Position, acct: AccountState, market_price: float) -> str:
+        """상태에 따라 다음 행동을 결정하는 메인 로직 함수"""
         # 1. 종료 조건 우선 확인
         current_spread = abs(long_pos.entry_price - short_pos.entry_price)
         if current_spread < self.config.SpreadExitThreshold:

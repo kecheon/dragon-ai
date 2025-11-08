@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 # 우리가 만든 모듈들
 from data_loader import load_price_data
-from defensive_strategy import StrategyConfig, Position, AccountState, DefensiveStrategy
+from defensive_strategy import StrategyConfig, Position, AccountState, DynamicHedgeStrategy
 
 # 시뮬레이션을 위한 글로벌 설정 (트리거 조건 추가)
 INITIAL_POSITION_SIZE = 1.0
@@ -38,7 +38,7 @@ def run_simulation(symbol: str):
     data.dropna(inplace=True)
     
     config = StrategyConfig()
-    strategy = DefensiveStrategy(config, logger=print)
+    strategy = DynamicHedgeStrategy(config, logger=print)
     
     results = []
 
@@ -81,7 +81,7 @@ def run_simulation(symbol: str):
                     u_loss=0, margin_usage=0.5,
                     atr_now=atr_now, atr_base=atr_base
                 )
-                status = strategy.defensive_loop_step(long_pos, short_pos, acct_state, market_price)
+                status = strategy.determine_next_action(long_pos, short_pos, acct_state, market_price)
             else:
                 status = "HOLD"
 
