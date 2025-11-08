@@ -12,9 +12,9 @@ random.seed(42)
 # ====================================
 # === 1. 데이터 로딩 (캐시 우선)  ===
 # ====================================
-SYMBOL = 'ETHUSDT'
+SYMBOL = 'SOLUSDT'
 TIMEFRAME = '5m'
-START_DATE = '2025-01-01T00:00:00Z'
+START_DATE = '2025-10-20T00:00:00Z'
 RAW_DATA_FILE = f"{SYMBOL}_{TIMEFRAME}_raw_data.csv"
 
 # 캐시 파일이 존재하면 파일에서 로드, 없으면 CCXT로 가져와서 저장
@@ -24,7 +24,7 @@ if os.path.exists(RAW_DATA_FILE):
     print(f"Total candles loaded from file: {len(data)}")
 else:
     print(f"'{RAW_DATA_FILE}' 파일이 없습니다. CCXT에서 데이터를 가져옵니다...")
-    exchange = ccxt.binanceus({'options': {'defaultType': 'future'}})
+    exchange = ccxt.bitget({'options': {'defaultType': 'future'}})
     exchange.load_markets()
 
     since = exchange.parse8601(START_DATE)

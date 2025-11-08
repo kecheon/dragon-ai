@@ -1,246 +1,154 @@
 import pandas as pd
-import numpy as np
 import xgboost as xgb
-import config
-import pandas_ta as ta
+import numpy as np
 
-# ===================================
-# === 1. 설정 (Configuration) ===
-# ===================================
-# --- 계좌 설정 ---
-INITIAL_BALANCE = 10000.0
-POSITION_QUANTITY = 0.01
-TRANSACTION_FEE_PCT = 0.0004 # 거래 수수료 (0.04%)
+def run_backtest():
+    """
+    v3 모델과 정의된 거래 전략을 사용하여 백테스팅을 수행합니다.
+    """
+    print("--- 최종 전략 백테스팅 시작 ---")
 
-# --- 파일 및 모델 경로 ---
-DATA_FILE = 'BTCUSDT_5m_raw_data.csv'
-MODEL_FILE = 'model_x.json'
-PREDICTION_THRESHOLD = 0.8 # 모델 예측 확신도 임계값
-
-# ===================================
-# === 2. 데이터 및 모델 로딩 ===
-# ===================================
-print("--- Loading Data and Model ---")
-# 데이터 로딩
-try:
-    data = pd.read_csv(DATA_FILE, index_col='Timestamp', parse_dates=True)
-    print(f"Data loaded successfully: {len(data)} rows")
-except FileNotFoundError:
-    print(f"Error: Data file '{DATA_FILE}' not found.")
-    exit()
-
-# 모델 로딩
-model_x = xgb.XGBClassifier()
-try:
-    model_x.load_model(MODEL_FILE)
-    print("Model 'model_x.json' loaded successfully.")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    exit()
-
-# ===================================
-# === 3. 특성 생성 함수 ===
-# ===================================
-def calculate_features(df):
-    """주어진 데이터프레임에 모델 학습에 사용된 특성들을 계산하여 추가합니다."""
-    df['volatility'] = df['Close'].pct_change().rolling(config.WINDOW).std()
-    
-    ema_short = ta.ema(df['Close'], length=20)
-    ema_long = ta.ema(df['Close'], length=100)
-    df['price_vs_ema_short'] = df['Close'] / ema_short
-    df['price_vs_ema_long'] = df['Close'] / ema_long
-    df['ema_cross'] = ema_short / ema_long
-    
-    returns = df['Close'].pct_change()
-    mean_returns = returns.rolling(config.WINDOW).mean()
-    std_returns = returns.rolling(config.WINDOW).std()
-    df['z_score'] = (returns - mean_returns) / std_returns
-    
-    dmi_df = ta.adx(high=df['High'], low=df['Low'], close=df['Close'], length=config.WINDOW)
-    df = df.join(dmi_df)
-    df.rename(columns={
-        f'ADX_{config.WINDOW}': 'adx',
-        f'DMP_{config.WINDOW}': 'dmp',
-        f'DMN_{config.WINDOW}': 'dmn'
-    }, inplace=True)
-    
-    # train_x.py에서 추가된 특성
-    # 백테스터에서는 spread_before_action을 동적으로 계산해야 함
-    df['spread_before_action'] = 0 # 임시 값
-    
-    return df
-
-print("--- Calculating Features ---")
-data = calculate_features(data)
-data.dropna(inplace=True)
-print("Features calculated.")
-
-
-# ===================================
-# === 4. 백테스팅 시뮬레이션 ===
-# ===================================
-print("-- Starting Backtest Simulation --")
-
-# --- 계좌 및 포지션 변수 초기화 ---
-balance = INITIAL_BALANCE
-equity_curve = [] # 빈 리스트로 시작
-trade_log = []
-
-# 포지션 정보
-long_pos_size = 0.0
-avg_long_price = 0.0
-short_pos_size = 0.0
-avg_short_price = 0.0
-
-# --- 시뮬레이션 루프 ---
-for i in range(1, len(data)):
-    current_price = data['Close'].iloc[i]
-    current_time = data.index[i]
-
-    # 포지션 진입/관리 로직
-    if long_pos_size == 0 and short_pos_size == 0:
-        # 초기 진입
-        avg_long_price = current_price * (1 + config.FIXED_SPREAD / 2)
-        long_pos_size = POSITION_QUANTITY
-        balance -= avg_long_price * long_pos_size * TRANSACTION_FEE_PCT
+    # --- 1. 데이터 및 모델 로드 ---
+    try:
+        model_df = pd.read_csv("volatility_data_v3.csv", index_col='Timestamp', parse_dates=True)
+        # 백테스팅에는 실제 가격 데이터가 필요하므로 원본 데이터를 로드합니다.
+        # 사용자가 3년치 데이터를 합쳤다고 가정하고, 해당 파일 이름을 'BTCUSDT_5m_raw_data.csv'로 예상합니다.
+        price_df = pd.read_csv("BTCUSDT_5m_raw_data.csv.2022", index_col='Timestamp', parse_dates=True)
         
-        avg_short_price = current_price * (1 - config.FIXED_SPREAD / 2)
-        short_pos_size = POSITION_QUANTITY
-        balance -= avg_short_price * short_pos_size * TRANSACTION_FEE_PCT
-        
-        trade_log.append(f"{current_time}: Initial Grid Entry -> LONG {long_pos_size} @ {avg_long_price:.2f}, SHORT {short_pos_size} @ {avg_short_price:.2f}")
+        model = xgb.XGBClassifier()
+        model.load_model("volatility_predictor_v3.json")
+        print("데이터 및 v3 모델을 성공적으로 로드했습니다.")
+    except FileNotFoundError as e:
+        print(f"오류: 필요한 파일({e.filename})을 찾을 수 없습니다. 이전 단계를 완료했는지 확인하세요.")
+        print("3년치 데이터 파일의 이름이 'BTCUSDT_5m_raw_data.csv'가 맞는지 확인해주세요.")
+        return
+
+    # --- 2. 신호 생성 ---
+    features = ['squeeze_on', 'consolidation_count', 'adx', 'bb_width']
+    X = model_df[features]
     
-    else: # 포지션 보유 중
-        unrealized_pnl = (current_price - avg_long_price) * long_pos_size + (avg_short_price - current_price) * short_pos_size
-        
-        if unrealized_pnl > 0:
-            # 전체 포지션 익절
-            balance += unrealized_pnl
-            balance -= (current_price * long_pos_size * TRANSACTION_FEE_PCT)
-            balance -= (current_price * short_pos_size * TRANSACTION_FEE_PCT)
-            trade_log.append(f"{current_time}: Global Profit Take -> Closed all for profit {unrealized_pnl:.2f}")
-            long_pos_size, avg_long_price, short_pos_size, avg_short_price = 0.0, 0.0, 0.0, 0.0
-        
-        else:
-            # 모델 기반 헤징 롤링
-            # 새로운 방향 결정 규칙: "규칙 A: 손실이 더 큰 포지션을 롤링한다."
-            unrealized_long_pnl_val = (current_price - avg_long_price) * long_pos_size
-            unrealized_short_pnl_val = (avg_short_price - current_price) * short_pos_size
+    print("예측 확률을 계산합니다...")
+    pred_proba = model.predict_proba(X)[:, 1]
+    
+    # 최종 신호: 임계값 0.90 적용
+    THRESHOLD = 0.90
+    signals = (pred_proba >= THRESHOLD).astype(int)
+    model_df['signal'] = signals
+    
+    # 백테스팅을 위해 신호 데이터를 원본 가격 데이터와 합침
+    df = price_df.join(model_df['signal'], how='inner')
+
+    # --- 3. 백테스팅 시뮬레이션 ---
+    print("백테스팅 시뮬레이션을 시작합니다...")
+    
+    # 전략 파라미터
+    TAKE_PROFIT_PCT = 0.02
+    STOP_LOSS_PCT = 0.01
+    TIME_LIMIT_CANDLES = 120 # 4시간
+    FEE_PCT = 0.0005
+
+    in_position = False
+    position = {}
+    trade_history = []
+
+    for i in range(1, len(df)):
+        # 포지션 종료 조건 확인
+        if in_position:
+            position['duration'] += 1
+            pnl = 0
+            exit_reason = None
+
+            # Stop Loss 체크
+            if position['direction'] == 'long' and df['Low'].iloc[i] <= position['stop_loss_price']:
+                pnl = (position['stop_loss_price'] - position['entry_price']) / position['entry_price']
+                exit_reason = 'Stop Loss'
+            elif position['direction'] == 'short' and df['High'].iloc[i] >= position['stop_loss_price']:
+                pnl = (position['entry_price'] - position['stop_loss_price']) / position['entry_price']
+                exit_reason = 'Stop Loss'
+
+            # Take Profit 체크
+            if exit_reason is None:
+                if position['direction'] == 'long' and df['High'].iloc[i] >= position['take_profit_price']:
+                    pnl = TAKE_PROFIT_PCT
+                    exit_reason = 'Take Profit'
+                elif position['direction'] == 'short' and df['Low'].iloc[i] <= position['take_profit_price']:
+                    pnl = TAKE_PROFIT_PCT
+                    exit_reason = 'Take Profit'
+
+            # Time Limit 체크
+            if exit_reason is None and position['duration'] >= TIME_LIMIT_CANDLES:
+                exit_price = df['Close'].iloc[i]
+                if position['direction'] == 'long':
+                    pnl = (exit_price - position['entry_price']) / position['entry_price']
+                else:
+                    pnl = (position['entry_price'] - exit_price) / position['entry_price']
+                exit_reason = 'Time Limit'
+
+            if exit_reason:
+                net_pnl = pnl - (2 * FEE_PCT) # 진입/청산 수수료
+                position['pnl'] = net_pnl
+                position['exit_reason'] = exit_reason
+                trade_history.append(position)
+                in_position = False
+                position = {}
+
+        # 포지션 진입 조건 확인
+        if not in_position and df['signal'].iloc[i-1] == 1:
+            entry_price = df['Open'].iloc[i]
+            direction = 'long' if df['Close'].iloc[i-1] > df['Open'].iloc[i-1] else 'short'
             
-            action = None
-            if unrealized_long_pnl_val < unrealized_short_pnl_val:
-                action = "PARTIAL_CLOSE_LONG"
-            else:
-                action = "PARTIAL_CLOSE_SHORT"
+            if direction == 'long':
+                take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT)
+                stop_loss_price = entry_price * (1 - STOP_LOSS_PCT)
+            else: # short
+                take_profit_price = entry_price * (1 - TAKE_PROFIT_PCT)
+                stop_loss_price = entry_price * (1 + STOP_LOSS_PCT)
 
-            # 이제 모델에게 이 action을 실행할지 말지 물어봄
-            features_df = data.iloc[[i]].copy()
-            features_df['spread_before_action'] = abs(avg_long_price - avg_short_price)
-            
-            # 신호 확인용 PNL 계산 (학습 때와 동일한 기준 수량으로)
-            unrealized_long_pnl_for_signal = (current_price - avg_long_price) * POSITION_QUANTITY
-            unrealized_short_pnl_for_signal = (avg_short_price - current_price) * POSITION_QUANTITY
-            features_df['unrealized_long_pnl'] = unrealized_long_pnl_for_signal
-            features_df['unrealized_short_pnl'] = unrealized_short_pnl_for_signal
-            features_df['total_unrealized_pnl'] = unrealized_long_pnl_for_signal + unrealized_short_pnl_for_signal
+            position = {
+                'entry_time': df.index[i],
+                'entry_price': entry_price,
+                'direction': direction,
+                'take_profit_price': take_profit_price,
+                'stop_loss_price': stop_loss_price,
+                'duration': 0
+            }
+            in_position = True
 
-            feature_columns = [
-                'unrealized_long_pnl', 'unrealized_short_pnl', 'total_unrealized_pnl',
-                'spread_before_action', 'volatility', 'adx', 'dmp', 'dmn',
-                'price_vs_ema_short', 'price_vs_ema_long', 'ema_cross', 'z_score'
-            ]
-            X_live = features_df[feature_columns].values
+    # --- 4. 결과 리포트 ---
+    if not trade_history:
+        print("\n백테스팅 기간 동안 거래가 발생하지 않았습니다.")
+        return
+        
+    report_df = pd.DataFrame(trade_history)
+    
+    total_trades = len(report_df)
+    wins = report_df[report_df['pnl'] > 0]
+    losses = report_df[report_df['pnl'] <= 0]
+    
+    win_rate = len(wins) / total_trades if total_trades > 0 else 0
+    
+    total_pnl = report_df['pnl'].sum()
+    
+    avg_profit = wins['pnl'].mean()
+    avg_loss = losses['pnl'].mean()
+    
+    profit_factor = wins['pnl'].sum() / abs(losses['pnl'].sum()) if abs(losses['pnl'].sum()) > 0 else 0
+    
+    print("\n--- 백테스팅 결과 리포트 ---")
+    print("="*40)
+    print(f"총 거래 횟수: {total_trades}")
+    print(f"총 순익 (PNL): {total_pnl:.4f} (초기 자본의 {total_pnl*100:.2f}%)")
+    print(f"승률 (Win Rate): {win_rate:.2%}")
+    print(f"수익 거래 수: {len(wins)}")
+    print(f"손실 거래 수: {len(losses)}")
+    print(f"평균 익절률: {avg_profit:.4f}")
+    print(f"평균 손절률: {avg_loss:.4f}")
+    print(f"손익비 (Profit Factor): {profit_factor:.2f}")
+    print("="*40)
+    
+    print("\n거래 종료 사유 분포:")
+    print(report_df['exit_reason'].value_counts(normalize=True).apply('{:.2%}'.format))
 
-            # 모델 예측 (확률 기반 필터링)
-            probabilities = model_x.predict_proba(X_live)[0]
-            
-            # '성공' 클래스에 대한 확신도가 임계값을 넘을 때만 액션 실행
-            if probabilities[1] > PREDICTION_THRESHOLD:
-                    trade_log.append(f"{current_time}: Model predicted SUCCESS for {action} (Prob: {probabilities[1]:.2f}). Executing roll.")
-                    closed_amount = POSITION_QUANTITY * config.PARTIAL_CLOSE_RATIO
-                    
-                    if action == "PARTIAL_CLOSE_LONG" and long_pos_size >= closed_amount:
-                        realized_pnl_on_close = (current_price - avg_long_price) * closed_amount
-                        balance += realized_pnl_on_close
-                        balance -= (current_price * closed_amount * TRANSACTION_FEE_PCT)
-                        long_pos_size -= closed_amount
-                        
-                        avg_short_price = ((avg_short_price * short_pos_size) + (current_price * closed_amount)) / (short_pos_size + closed_amount)
-                        short_pos_size += closed_amount
-                        balance -= (current_price * closed_amount * TRANSACTION_FEE_PCT)
 
-                    elif action == "PARTIAL_CLOSE_SHORT" and short_pos_size >= closed_amount:
-                        realized_pnl_on_close = (avg_short_price - current_price) * closed_amount
-                        balance += realized_pnl_on_close
-                        balance -= (current_price * closed_amount * TRANSACTION_FEE_PCT)
-                        short_pos_size -= closed_amount
-
-                        avg_long_price = ((avg_long_price * long_pos_size) + (current_price * closed_amount)) / (long_pos_size + closed_amount)
-                        long_pos_size += closed_amount
-                        balance -= (current_price * closed_amount * TRANSACTION_FEE_PCT)
-                    else:
-                        # Log a more informative message
-                        if action: # Only log if there was a signal to begin with
-                            trade_log.append(f"{current_time}: Model predicted FAILURE for {action} (Prob: {probabilities[1]:.2f}). Action AVOIDED.")
-
-    # 매 루프의 끝에서 현재 자산 상태를 한 번만 기록
-    final_unrealized_pnl = (current_price - avg_long_price) * long_pos_size + (avg_short_price - current_price) * short_pos_size
-    equity = balance + final_unrealized_pnl
-    equity_curve.append(equity)
-
-print("--- Backtest Simulation Finished ---")
-
-# ===================================
-# === 5. 결과 리포팅 ===
-# ===================================
-print("--- Generating Performance Report ---")
-
-# 최종 PnL 계산
-if not equity_curve:
-    final_balance = balance
-else:
-    final_balance = equity_curve[-1]
-final_pnl = final_balance - INITIAL_BALANCE
-total_return_pct = (final_pnl / INITIAL_BALANCE) * 100
-
-# Equity Curve 데이터프레임 생성
-if len(equity_curve) > 0:
-    equity_df = pd.DataFrame({'equity': equity_curve}, index=data.index[1:])
-
-    # 최대 낙폭 (Max Drawdown) 계산
-    peak = equity_df['equity'].cummax()
-    drawdown = (equity_df['equity'] - peak) / peak
-    max_drawdown = drawdown.min()
-
-    # 샤프 비율 (Sharpe Ratio) 계산
-    daily_returns = equity_df['equity'].resample('D').last().pct_change().dropna()
-    if not daily_returns.empty and daily_returns.std() > 0:
-        sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(365)
-    else:
-        sharpe_ratio = 0.0
-
-    print(f"Backtest Period: {equity_df.index[0].date()} to {equity_df.index[-1].date()}")
-else:
-    max_drawdown = 0.0
-    sharpe_ratio = 0.0
-    print("Backtest Period: Not enough data to calculate.")
-
-# 거래 횟수
-total_trades = len([log for log in trade_log if "Executing roll" in log or "Global Profit Take" in log])
-
-print("\n" + "="*30)
-print("PERFORMANCE METRICS")
-print("="*30)
-print(f"Initial Balance:    {INITIAL_BALANCE:12.2f}")
-print(f"Final Balance:        {final_balance:12.2f}")
-print(f"Total PnL:            {final_pnl:12.2f} ({total_return_pct:.2f}%)")
-print(f"Max Drawdown:         {max_drawdown:12.2%}")
-print(f"Sharpe Ratio:         {sharpe_ratio:12.2f}")
-print(f"Total Trades:         {total_trades:12d}")
-print("="*30)
-
-# 마지막 거래 로그 몇 개 출력
-print("\n--- Last 20 Trades ---")
-for log in trade_log[-20:]:
-    print(log)
-
+if __name__ == "__main__":
+    run_backtest()

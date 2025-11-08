@@ -1,83 +1,80 @@
 import pandas as pd
-import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
-from sklearn.preprocessing import LabelEncoder
+import numpy as np
+from sklearn.metrics import precision_score, recall_score, confusion_matrix
 
-def train_final_model():
+def train_model_v3():
     """
-    생성된 strategy_dataset_v3.csv를 사용하여 최종 다중 클래스 모델을 학습하고 평가합니다.
+    volatility_data_v3.csv를 사용하여 변동성 예측 모델 v3를 훈련하고 저장합니다.
     """
-    # ===================================
-    # 1. 데이터 로드 및 전처리
-    # ===================================
-    file_path = "strategy_dataset_v3.csv"
-    print(f"'{file_path}' 파일에서 최종 학습 데이터를 로드합니다...")
+    print("--- 모델 v3 훈련 시작 (고급 피처) ---")
+    
+    # --- 1. 데이터 로드 ---
+    print("학습용 데이터셋(volatility_data_v3.csv)을 로드합니다...")
     try:
-        df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+        df = pd.read_csv("volatility_data_v3.csv", index_col='Timestamp', parse_dates=True)
     except FileNotFoundError:
-        print(f"오류: '{file_path}' 파일을 찾을 수 없습니다.")
-        print("먼저 generate_strategy_data.py를 실행하여 데이터를 생성해야 합니다.")
+        print("오류: volatility_data_v3.csv 파일을 찾을 수 없습니다.")
         return
 
-    print("데이터 전처리를 시작합니다...")
-    
-    # 무한대 값이나 매우 큰 값들을 NaN으로 변환 후 제거
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.dropna(inplace=True)
+    # --- 2. 피처와 레이블 정의 (v3) ---
+    features = ['squeeze_on', 'consolidation_count', 'adx', 'bb_width']
+    X = df[features]
+    y = df['label']
 
-    # 특성과 레이블 정의
-    # pnl_at_action은 미래 정보이므로 제외, label은 문자열이므로 제외
-    feature_columns = [col for col in df.columns if col not in ['label', 'pnl_at_action']]
-    X = df[feature_columns]
-    y_str = df['label']
+    print(f"{len(df)}개의 데이터로 모델을 학습합니다.")
+    print(f"사용된 피처: {features}")
 
-    # 문자열 레이블을 숫자로 변환 ("CUT_LOSS":0, "HOLD":1, "RE_LOCK":2)
-    le = LabelEncoder()
-    y = le.fit_transform(y_str)
-    print(f"레이블 인코딩: {dict(zip(le.classes_, le.transform(le.classes_)))}")
-
-    # ===================================
-    # 2. 데이터 분할 및 모델 학습
-    # ===================================
-    print("\n모델 학습을 시작합니다...")
-
-    # 시계열 데이터 분할 (셔플 없이 마지막 20%를 검증 세트로 사용)
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=False)
+    # --- 3. 훈련/검증 데이터 분할 (시계열) ---
+    split_index = int(len(X) * 0.8)
+    X_train, X_val = X[:split_index], X[split_index:]
+    y_train, y_val = y[:split_index], y[split_index:]
 
     print(f"훈련 데이터: {len(X_train)}개, 검증 데이터: {len(X_val)}개")
+    train_label_dist = dict(zip(*np.unique(y_train, return_counts=True)))
     
-    # 모델 정의 (튜닝된 파라미터 사용)
+    if len(train_label_dist) < 2:
+        print("모델을 학습하기에 레이블 종류가 충분하지 않습니다.")
+        return
+
+    # --- 4. 모델 설정 및 훈련 ---
+    scale_pos_weight = train_label_dist[0] / train_label_dist[1]
+    print(f"계산된 scale_pos_weight: {scale_pos_weight:.4f}")
+
+    # 이전 튜닝에서 찾은 최적 파라미터를 사용
+    best_params = {'learning_rate': 0.1, 'max_depth': 7, 'n_estimators': 200}
+    print(f"적용된 하이퍼파라미터: {best_params}")
+
     model = xgb.XGBClassifier(
-        objective='multi:softmax',    # 다중 클래스 분류
-        num_class=len(le.classes_), # 클래스의 수 (4)
-        n_estimators=100,           # 튜닝된 값
-        learning_rate=0.1,          # 튜닝된 값
-        max_depth=7,                # 튜닝된 값
-        gamma=0.1,                  # 튜닝된 값
-        subsample=0.8,              # 튜닝된 값
-        use_label_encoder=False
+        objective='binary:logistic',
+        gamma=0.3,
+        subsample=0.8,
+        use_label_encoder=False,
+        scale_pos_weight=scale_pos_weight,
+        **best_params
     )
 
-    # 모델 학습
+    print("\nXGBoost 모델 훈련을 시작합니다...")
     model.fit(X_train, y_train)
+    print("모델 훈련 완료.")
 
-    # ===================================
-    # 3. 모델 평가
-    # ===================================
-    print("\n--- 최종 모델 평가 결과 ---")
-
-    # 예측
+    # --- 5. 모델 평가 ---
+    print("\n--- 모델 성능 평가 (검증 데이터) ---")
     y_pred = model.predict(X_val)
+    
+    precision = precision_score(y_val, y_pred, zero_division=0)
+    recall = recall_score(y_val, y_pred, zero_division=0)
+    conf_matrix = confusion_matrix(y_val, y_pred)
 
-    # 정확도
-    accuracy = np.mean(y_val == y_pred)
-    print(f"전체 검증 정확도 (Accuracy): {accuracy:.4f}")
+    print(f"정밀도 (Precision): {precision:.4f}")
+    print(f"재현율 (Recall): {recall:.4f}")
+    print("\n혼동 행렬 (Confusion Matrix):")
+    print(conf_matrix)
 
-    # 상세 분류 리포트
-    print("\n상세 분류 리포트:")
-    print(classification_report(y_val, y_pred, target_names=le.classes_))
+    # --- 6. 모델 저장 ---
+    model_filename = "volatility_predictor_v3.json"
+    model.save_model(model_filename)
+    print(f"\n훈련된 모델 v3를 '{model_filename}' 파일로 저장했습니다.")
 
 if __name__ == "__main__":
-    train_final_model()
+    train_model_v3()

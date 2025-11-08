@@ -1,126 +1,89 @@
 import pandas as pd
-import numpy as np
 import xgboost as xgb
-import pandas_ta as ta
-import config
-from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
-from scipy.stats import uniform, randint
+import numpy as np
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import precision_score, recall_score, confusion_matrix
 
-# ===================================
-# === 1. 설정 (Configuration) ===
-# ===================================
-DATA_FILE = "data.csv"
-PROFIT_TAKE_PCT = 0.01
-STOP_LOSS_PCT = 0.01
-TIME_BARRIER = 60
+def tune_model_v2():
+    """
+    GridSearchCV를 사용하여 XGBoost 모델의 최적 하이퍼파라미터를 찾습니다.
+    (목표: 정밀도(Precision) 극대화)
+    """
+    print("--- 하이퍼파라미터 튜닝 시작 (시간이 소요될 수 있습니다) ---")
 
-# ===================================
-# === 2. 데이터 및 특성 준비 ===
-# ===================================
-print("--- Loading Data and Calculating Features for Tuning ---")
-try:
-    data = pd.read_csv(DATA_FILE, index_col="Timestamp", parse_dates=True)
-except FileNotFoundError:
-    print(f"Error: Data file '{DATA_FILE}' not found.")
-    exit()
+    # --- 1. 데이터 로드 ---
+    try:
+        df = pd.read_csv("volatility_data_v2.csv", index_col='Timestamp', parse_dates=True)
+    except FileNotFoundError:
+        print("오류: volatility_data_v2.csv 파일을 찾을 수 없습니다.")
+        return
 
-def calculate_features(df):
-    df["volatility"] = df["Close"].pct_change().rolling(config.WINDOW).std()
-    ema_short = ta.ema(df["Close"], length=20)
-    ema_long = ta.ema(df["Close"], length=100)
-    df["price_vs_ema_short"] = df["Close"] / ema_short
-    df["price_vs_ema_long"] = df["Close"] / ema_long
-    df["ema_cross"] = ema_short / ema_long
-    returns = df["Close"].pct_change()
-    mean_returns = returns.rolling(config.WINDOW).mean()
-    std_returns = returns.rolling(config.WINDOW).std()
-    df["z_score"] = (returns - mean_returns) / std_returns
-    dmi_df = ta.adx(high=df["High"], low=df["Low"], close=df["Close"], length=config.WINDOW)
-    df = df.join(dmi_df)
-    df.rename(columns={f"ADX_{config.WINDOW}": "adx", f"DMP_{config.WINDOW}": "dmp", f"DMN_{config.WINDOW}": "dmn"}, inplace=True)
-    MOMENTUM_PERIOD = 10
-    df["price_momentum"] = df["Close"].pct_change(periods=MOMENTUM_PERIOD)
-    df["volatility_momentum"] = df["volatility"].pct_change(periods=MOMENTUM_PERIOD)
-    df["adx_momentum"] = df["adx"].pct_change(periods=MOMENTUM_PERIOD)
-    return df
+    # --- 2. 훈련/검증 데이터 준비 ---
+    features = ['bb_width', 'atr_normalized', 'adx', 'volatility', 'volatility_roc']
+    split_index = int(len(df) * 0.8)
+    X_train = df[features][:split_index]
+    y_train = df['label'][:split_index]
+    X_val = df[features][split_index:]
+    y_val = df['label'][split_index:]
 
-data = calculate_features(data)
-print("Features calculated.")
+    # --- 3. GridSearchCV 설정 ---
+    # 클래스 불균형 처리를 위한 scale_pos_weight 계산
+    scale_pos_weight = np.sum(y_train == 0) / np.sum(y_train == 1)
+    print(f"계산된 scale_pos_weight: {scale_pos_weight:.4f}")
 
-# ===================================
-# === 3. 학습 데이터 생성 ===
-# ===================================
-print("--- Generating Labels ---")
-labels = []
-for i in range(len(data) - TIME_BARRIER):
-    entry_price = data["Close"].iloc[i]
-    upper_barrier = entry_price * (1 + PROFIT_TAKE_PCT)
-    lower_barrier = entry_price * (1 - STOP_LOSS_PCT)
-    label = 0
-    for j in range(1, TIME_BARRIER + 1):
-        future_high = data["High"].iloc[i + j]
-        future_low = data["Low"].iloc[i + j]
-        if future_high >= upper_barrier:
-            label = 1
-            break
-        elif future_low <= lower_barrier:
-            label = -1
-            break
-    labels.append(label)
+    # 테스트할 하이퍼파라미터 그리드 정의
+    param_grid = {
+        'max_depth': [3, 5, 7],
+        'n_estimators': [100, 200],
+        'learning_rate': [0.05, 0.1]
+    }
 
-features_df = data.iloc[:-TIME_BARRIER].copy()
-features_df["label"] = labels
-features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-features_df.dropna(inplace=True)
+    # 기본 모델 초기화
+    xgb_model = xgb.XGBClassifier(
+        objective='binary:logistic',
+        gamma=0.3,
+        subsample=0.8,
+        use_label_encoder=False,
+        scale_pos_weight=scale_pos_weight
+    )
 
-# ===================================
-# === 4. 하이퍼파라미터 튜닝 ===
-# ===================================
-print("--- Starting Hyperparameter Tuning ---")
-feature_columns = [
-    "volatility", "adx", "dmp", "dmn", "price_vs_ema_short", "price_vs_ema_long",
-    "ema_cross", "z_score", "price_momentum", "volatility_momentum", "adx_momentum"
-]
-X = features_df[feature_columns]
-y = features_df["label"].replace({-1: 2})
+    # GridSearchCV 객체 생성 (평가 지표를 'precision'으로 설정)
+    grid_search = GridSearchCV(
+        estimator=xgb_model,
+        param_grid=param_grid,
+        scoring='precision',
+        cv=3, # 3-fold cross-validation
+        verbose=1, # 진행 과정 출력
+        n_jobs=-1 # 모든 CPU 코어 사용
+    )
 
-# 데이터의 일부만 사용하여 튜닝 시간 단축 (예: 앞 50%)
-# TimeSeriesSplit을 사용하면 초기 학습 데이터가 적으므로 샘플을 늘리는 것이 안정적입니다.
-sample_size = int(len(X) * 0.50)
-X_sample = X.iloc[:sample_size]
-y_sample = y.iloc[:sample_size]
+    # --- 4. 튜닝 실행 ---
+    print("\nGridSearchCV를 사용하여 최적 파라미터를 탐색합니다...")
+    grid_search.fit(X_train, y_train)
 
-# 탐색할 하이퍼파라미터 공간 정의
-param_dist = {
-    'learning_rate': uniform(0.01, 0.2),
-    'n_estimators': randint(100, 400),
-    'max_depth': randint(3, 8),
-    'subsample': uniform(0.7, 0.3), # 0.7 ~ 1.0
-    'colsample_bytree': uniform(0.7, 0.3), # 0.7 ~ 1.0
-    'gamma': uniform(0, 0.5)
-}
+    print("\n튜닝 완료!")
+    print("최적 하이퍼파라미터:", grid_search.best_params_)
+    print("최고 정밀도 점수 (교차 검증):", grid_search.best_score_)
 
-# XGBoost 모델 초기화
-model = xgb.XGBClassifier(
-    objective="multi:softmax",
-    num_class=3,
-    use_label_encoder=False,
-    eval_metric="mlogloss"
-)
+    # --- 5. 최적 모델로 재평가 ---
+    print("\n--- 최적 모델 성능 평가 (검증 데이터) ---")
+    best_model = grid_search.best_estimator_
+    y_pred = best_model.predict(X_val)
 
-# 시계열 교차 검증 설정 (Walk-forward 방식)
-tscv = TimeSeriesSplit(n_splits=3)
+    precision = precision_score(y_val, y_pred)
+    recall = recall_score(y_val, y_pred)
+    conf_matrix = confusion_matrix(y_val, y_pred)
 
-# RandomizedSearchCV 설정
-# n_iter: 시도할 조합 수, cv: 교차 검증 분할기
-random_search = RandomizedSearchCV(
-    model, param_distributions=param_dist, n_iter=25, cv=tscv,
-    scoring='f1_weighted', n_jobs=-1, random_state=42, verbose=3
-)
+    print(f"정밀도 (Precision): {precision:.4f}")
+    print(f"재현율 (Recall): {recall:.4f}")
+    print("\n혼동 행렬 (Confusion Matrix):")
+    print(conf_matrix)
+    
+    # --- 6. 최적 모델 저장 ---
+    model_filename = "volatility_predictor_v2_tuned.json"
+    best_model.save_model(model_filename)
+    print(f"\n튜닝된 최적 모델을 '{model_filename}' 파일로 저장했습니다.")
 
-# 튜닝 실행
-random_search.fit(X_sample, y_sample)
 
-print("\n--- Tuning Complete ---")
-print("Best parameters found: ", random_search.best_params_)
-print("Best weighted F1-score: ", random_search.best_score_)
+if __name__ == "__main__":
+    tune_model_v2()

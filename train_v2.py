@@ -1,139 +1,88 @@
 import pandas as pd
-import numpy as np
 import xgboost as xgb
-import pandas_ta as ta
-import config
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix
 
-
-# ===================================
-# === 1. 설정 (Configuration) ===
-# ===================================
-# --- 파일 및 모델 경로 ---
-DATA_FILE = "data.csv"
-MODEL_FILE = "trend_model.json"
-
-# --- 새로운 학습 파라미터 ---
-# 트리플 배리어 라벨링 설정
-PROFIT_TAKE_PCT = 0.01
-STOP_LOSS_PCT = 0.01
-TIME_BARRIER = 120
-MOMENTUM_PERIOD = 10
-
-# ===================================
-# === 2. 데이터 및 특성 준비 ===
-# ===================================
-print("--- Loading Data and Calculating Features ---")
-try:
-    data = pd.read_csv(DATA_FILE, index_col="Timestamp", parse_dates=True)
-    print(f"Data loaded successfully: {len(data)} rows")
-except FileNotFoundError:
-    print(f"Error: Data file '{DATA_FILE}' not found.")
-    exit()
-
-# 특성 생성 함수 (모멘텀 특성 추가)
-def calculate_features(df):
-    # 기존 특성
-    df["volatility"] = df["Close"].pct_change().rolling(config.WINDOW).std()
-    # ema_short = ta.ema(df["Close"], length=20)
-    # ema_long = ta.ema(df["Close"], length=100)
-    # df["price_vs_ema_short"] = df["Close"] / ema_short
-    # df["price_vs_ema_long"] = df["Close"] / ema_long
-    # df["ema_cross"] = ema_short / ema_long
-    returns = df["Close"].pct_change()
-    mean_returns = returns.rolling(config.WINDOW).mean()
-    std_returns = returns.rolling(config.WINDOW).std()
-    df["z_score"] = (returns - mean_returns) / std_returns
-    dmi_df = ta.adx(high=df["High"], low=df["Low"], close=df["Close"], length=config.WINDOW)
-    df = df.join(dmi_df)
-    df.rename(columns={f"ADX_{config.WINDOW}": "adx", f"DMP_{config.WINDOW}": "dmp", f"DMN_{config.WINDOW}": "dmn"}, inplace=True)
-
-    # === 새로운 동적/모멘텀 특성 추가 ===
-    df["price_momentum"] = df["Close"].pct_change(periods=MOMENTUM_PERIOD)
-    df["volatility_momentum"] = df["volatility"].pct_change(periods=MOMENTUM_PERIOD)
-    df["adx_momentum"] = df["adx"].pct_change(periods=MOMENTUM_PERIOD)
+def train_model_v2():
+    """
+    volatility_data_v2.csv를 사용하여 변동성 예측 모델 v2를 훈련하고 저장합니다.
+    """
+    print("--- 모델 v2 훈련 시작 ---")
     
-    return df
+    # --- 1. 데이터 로드 ---
+    print("학습용 데이터셋(volatility_data_v2.csv)을 로드합니다...")
+    try:
+        df = pd.read_csv("volatility_data_v2.csv", index_col='Timestamp', parse_dates=True)
+    except FileNotFoundError:
+        print("오류: volatility_data_v2.csv 파일을 찾을 수 없습니다. 데이터 생성 단계를 먼저 실행해주세요.")
+        return
 
-data = calculate_features(data)
-print("Features calculated.")
+    # --- 2. 피처와 레이블 정의 (v2) ---
+    features = ['bb_width', 'atr_normalized', 'adx', 'volatility', 'volatility_roc']
+    X = df[features]
+    y = df['label']
 
-# =====================================================
-# === 3. 학습 데이터 생성 (Triple-Barrier Labeling) ===
-# =====================================================
-print("--- Generating Labels using Triple-Barrier Method ---")
-labels = []
-for i in range(len(data) - TIME_BARRIER):
-    entry_price = data["Close"].iloc[i]
-    upper_barrier = entry_price * (1 + PROFIT_TAKE_PCT)
-    lower_barrier = entry_price * (1 - STOP_LOSS_PCT)
-    label = 0
-    for j in range(1, TIME_BARRIER + 1):
-        future_high = data["High"].iloc[i + j]
-        future_low = data["Low"].iloc[i + j]
-        if future_high >= upper_barrier:
-            label = 1
-            break
-        elif future_low <= lower_barrier:
-            label = -1
-            break
-    labels.append(label)
+    print(f"{len(df)}개의 데이터로 모델을 학습합니다.")
+    print(f"사용된 피처: {features}")
 
-features_df = data.iloc[:-TIME_BARRIER].copy()
-features_df["label"] = labels
+    # --- 3. 훈련/검증 데이터 분할 (시계열) ---
+    split_index = int(len(X) * 0.8)
+    X_train, X_val = X[:split_index], X[split_index:]
+    y_train, y_val = y[:split_index], y[split_index:]
 
-# 무한대(inf) 값을 NaN으로 변환 후, 모든 결측치(NaN) 제거
-features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-features_df.dropna(inplace=True)
+    print(f"훈련 데이터: {len(X_train)}개, 검증 데이터: {len(X_val)}개")
+    train_label_dist = dict(zip(*np.unique(y_train, return_counts=True)))
+    val_label_dist = dict(zip(*np.unique(y_val, return_counts=True)))
+    print("Train label distribution:", train_label_dist)
+    print("Validation label distribution:", val_label_dist)
 
-print("Label distribution:", features_df["label"].value_counts())
+    if len(train_label_dist) < 2:
+        print("모델을 학습하기에 레이블 종류가 충분하지 않습니다.")
+        return
 
-# ===================================
-# === 4. 모델 학습 (Multi-class) ===
-# ===================================
-print("--- Training New Trend Model (Multi-class) ---")
+    # --- 4. 모델 설정 및 훈련 ---
+    # 클래스 불균형 처리를 위해 scale_pos_weight 계산
+    scale_pos_weight = train_label_dist[0] / train_label_dist[1]
+    print(f"계산된 scale_pos_weight: {scale_pos_weight:.4f}")
 
-# 특성과 라벨 분리
-feature_columns = [
-    "adx", "dmp", "dmn", 
-    "z_score",
-    "price_momentum", "volatility_momentum", "adx_momentum"
-]
-X = features_df[feature_columns]
-y = features_df["label"].replace({-1: 2})
+    model = xgb.XGBClassifier(
+        objective='binary:logistic', eval_metric='logloss',
+        n_estimators=100, learning_rate=0.1, max_depth=5, # max_depth를 약간 줄여 과적합 방지 시도
+        gamma=0.3, subsample=0.8, use_label_encoder=False,
+        scale_pos_weight=scale_pos_weight
+    )
 
-# 데이터 분할 (시간순)
-split_index = int(len(X) * 0.8)
-X_train, X_val = X.iloc[:split_index], X.iloc[split_index:]
-y_train, y_val = y.iloc[:split_index], y.iloc[split_index:]
+    print("\nXGBoost 모델 훈련을 시작합니다...")
+    model.fit(X_train, y_train)
+    print("모델 훈련 완료.")
 
-print("Train data shape:", X_train.shape)
-print("Validation data shape:", X_val.shape)
+    # --- 5. 모델 평가 ---
+    print("\n--- 모델 성능 평가 (검증 데이터) ---")
+    y_pred = model.predict(X_val)
+    
+    # 예측 확률값 확인 (디버깅 및 분석용)
+    y_pred_proba = model.predict_proba(X_val)[:, 1]
+    print(f"예측 확률(class 1)의 분포: Min={y_pred_proba.min():.4f}, Mean={y_pred_proba.mean():.4f}, Max={y_pred_proba.max():.4f}")
 
-# XGBoost 다중 클래스 분류 모델 학습 (튜닝된 하이퍼파라미터 적용)
-model_v2 = xgb.XGBClassifier(
-    objective="multi:softmax",
-    num_class=3,
-    colsample_bytree=0.8852444528883149,
-    gamma=0.30582658024414044,
-    learning_rate=0.011413261043943482,
-    max_depth=3,
-    n_estimators=148,
-    subsample=0.8574323980775167,
-    use_label_encoder=False,
-    eval_metric="mlogloss",
-)
+    accuracy = accuracy_score(y_val, y_pred)
+    precision = precision_score(y_val, y_pred)
+    recall = recall_score(y_val, y_pred)
+    conf_matrix = confusion_matrix(y_val, y_pred)
 
-model_v2.fit(
-    X_train,
-    y_train,
-    eval_set=[(X_val, y_val)],
-    early_stopping_rounds=20,
-    verbose=True,
-)
+    print(f"\n정확도 (Accuracy): {accuracy:.4f}")
+    print(f"정밀도 (Precision): {precision:.4f}  <-- (모델이 '변동성 시작'이라고 예측한 것 중 실제 비율)")
+    print(f"재현율 (Recall): {recall:.4f}    <-- (실제 '변동성 시작' 중 모델이 잡아낸 비율)")
+    
+    print("\n혼동 행렬 (Confusion Matrix):")
+    print("         [ 예측: 0 | 예측: 1 ]")
+    print(f"실제: 0  [[{conf_matrix[0][0]:>6} | {conf_matrix[0][1]:>6} ]]")
+    print(f"실제: 1  [[{conf_matrix[1][0]:>6} | {conf_matrix[1][1]:>6} ]]")
 
-# ===================================
-# === 5. 모델 저장 ===
-# ===================================
-print(f"--- Saving model to {MODEL_FILE} ---")
-model_v2.save_model(MODEL_FILE)
-print("New trend model saved successfully.")
+
+    # --- 6. 모델 저장 ---
+    model_filename = "volatility_predictor_v2.json"
+    model.save_model(model_filename)
+    print(f"\n훈련된 모델 v2를 '{model_filename}' 파일로 저장했습니다.")
+
+if __name__ == "__main__":
+    train_model_v2()

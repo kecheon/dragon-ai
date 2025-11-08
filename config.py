@@ -34,9 +34,9 @@ def get_action_decision_DMI(params):
     # --- 현재 활성화된 전략 ---
     # 설명: ADX가 임계값 '이상'이고, DMI 교차가 발생할 때 
     if adx > adx_threshold and plus_di < minus_di:
-        action = "ENTER_LONG"
-    elif adx > adx_threshold and plus_di > minus_di:
         action = "ENTER_SHORT"
+    elif adx > adx_threshold and plus_di > minus_di:
+        action = "ENTER_LONG"
     
     return action
 
