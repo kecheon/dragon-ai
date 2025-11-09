@@ -1,0 +1,99 @@
+sequenceDiagram
+    participant sim as Simulation Loop
+    participant strategy as DynamicHedgeStrategy
+    participant long_pos as Long Position
+    participant short_pos as Short Position
+
+    Note over sim, short_pos: 매 5분봉마다 새로운 가격으로 루프 시작
+
+    sim->>strategy: determine_next_action(pos, market_data, attempts)
+    strategy->>strategy: 1. 총 손익(PNL) 및 현재 모드 계산
+    
+    alt 불균형 모드(Imbalanced) & 총 손익 > 0
+        strategy-->>sim: "EXIT_PROFIT_TARGET_MET"
+    else
+        Note over strategy: 종료 조건이 아니면, 행동 결정 시작
+
+        alt 잠금 모드(Locked)
+            strategy->>strategy: 2a. 부분 익절 조건 확인
+            opt 수익 포지션에 역추세 발생
+                strategy->>long_pos: execute_partial_close()
+                strategy-->>sim: "ACTION_PARTIAL_CLOSE_LONG"
+            end
+
+            strategy->>strategy: 2b. 공격적 물타기 조건 확인
+            opt 추세 방향과 일치
+                strategy->>long_pos: execute_averaging()
+                strategy-->>sim: "ACTION_AVG_LONG_TREND"
+            end
+
+        else 불균형 모드(Imbalanced) & 총 손익 < 0
+            
+            alt 균형화 시도 횟수 < 한도
+                strategy->>strategy: 3a. 방어적 균형화 시도
+                strategy->>short_pos: execute_averaging()
+                strategy-->>sim: "ACTION_DEFENSIVE_AVG_SHORT"
+                Note right of sim: (균형화 시도 횟수 +1)
+            else 균형화 시도 횟수 >= 한도
+                strategy->>strategy: 3b. Forced Cut (의도적 위험 축소) 실행
+                strategy->>long_pos: execute_partial_close()
+                strategy-->>sim: "ACTION_FORCED_CUT_LONG"
+            end
+        end
+    end
+
+graph TD
+     subgraph 잠금 모드 (Locked)
+         A["<b>잠금 모드 진입</b><br/>(롱/숏 수량 일치)"]
+     end
+ 
+     subgraph 불균형 모드 (Imbalanced)
+         B["<b>불균형 모드 진입</b><br/>(롱/숏 수량 불일치)"]
+     end
+ 
+     subgraph 사이클 종료
+         C[수익 실현 종료]
+         D[강제 손절 종료]
+     end
+ 
+     %% 상태 전이 정의 %%
+ 
+     A --"<b>조건:</b> 추세/변동성 충족<br/><b>행동:</b> 공격적 물타기<br/>(Averaging)"--> B
+     A --"<b>조건:</b> 수익 중 역추세<br/><b>행동:</b> 부분 익절<br/>(Partial Exit)"--> B
+     
+     B --"<b>조건:</b> 총 손익 >= 0<br/><b>행동:</b> 전체 포지션 청산<br/>(Take-Profit Exit)"--> C
+ 
+     B --"<b>조건:</b> 총 손익 < 0<br/>AND 균형화 시도 < 한도<br/><b>행동:</b> 방어적 균형화<br/>(Defensive Averaging)"--> A
+ 
+     B --"<b>조건:</b> 총 손익 < 0<br/>AND 균형화 시도 >= 한도<br/><b>행동:</b> 추세 불리 포지션 손절<br/>(Forced Cut)"--> B
+ 
+     %% Forced Cut이 사이클을 종료시키는 경우도 명시 (선택적)
+     %% B -.-> D
+
+sequenceDiagram
+    participant Locked as 잠금 모드 (Locked)
+    participant Imbalanced as 불균형 모드 (Imbalanced)
+    participant Exit as 사이클 종료
+
+    Note over Locked, Imbalanced: 전략 발동 조건 충족 시 (ADX, ATR 필터)
+
+    Locked->>Imbalanced: Averaging (공격적 물타기)
+    Note right of Imbalanced: 추세 방향 포지션 추가<br/>(Locked -> Imbalanced)
+
+    Locked->>Imbalanced: Partial Exit (부분 익절)
+    Note right of Imbalanced: 수익 포지션 일부 청산<br/>(Locked -> Imbalanced)
+
+    Imbalanced->>Exit: Take-Profit Exit (총수익 >= 0)
+    Note right of Exit: 모든 포지션 청산<br/>(Imbalanced -> Exit)
+
+    loop 균형화 시도 (총 손익 < 0)
+        Imbalanced->>Imbalanced: Check Balancing Attempts
+        alt 시도 횟수 < 한도
+            Imbalanced->>Locked: Defensive Averaging (방어적 균형화)
+            Note right of Locked: 수량 적은 쪽 포지션 추가<br/>(Imbalanced -> Locked)<br/>(균형화 시도 횟수 +1)
+        else 시도 횟수 >= 한도
+            Imbalanced->>Imbalanced: Forced Cut (의도적 위험 축소)
+            Note right of Imbalanced: 추세에 불리한 포지션 손절<br/>(Imbalanced -> Imbalanced)
+        end
+    end
+
