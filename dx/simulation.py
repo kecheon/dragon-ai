@@ -67,7 +67,12 @@ def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spr
             market_price = data['Close'].iloc[current_step]
             
             adx_now = data['adx'].iloc[current_step]
-            is_trending = adx_now > adx_threshold
+            plus_di_now = data['plus_di'].iloc[current_step]
+            minus_di_now = data['minus_di'].iloc[current_step]
+            is_trending = False
+            if adx_now > adx_threshold:
+                if (plus_di_now > minus_di_now) or (minus_di_now > plus_di_now):
+                    is_trending = True
             is_volatile = data['atr'].iloc[current_step] > data['atr_sma'].iloc[current_step]
             trigger_activated = is_trending and is_volatile
 
@@ -83,7 +88,7 @@ def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spr
             else:
                 status = "HOLD"
 
-            if "EXIT" in status or ("STRATEGIC_CUT" in status and "NO_ACTION" not in status):
+            if "EXIT" in status:
                 final_pnl_strategy = ((market_price - long_pos.entry_price) * long_pos.size) + \
                                      ((short_pos.entry_price - market_price) * short_pos.size)
                 break
@@ -121,11 +126,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # --- 민감도 분석을 위한 파라미터 범위 설정 (최적 지점 심층 탐사) ---
-    adx_thresholds = [18, 20, 22]
-    atr_windows = [90, 100, 110]
-    fixed_spreads = [0.03, 0.04, 0.05]
-    max_balancing_attempts_list = [4, 5, 6]
-
+    adx_thresholds = [15, 20, 25]
+    atr_windows = [50, 100, 150]
+    fixed_spreads = [0.01, 0.03, 0.05]
+    max_balancing_attempts_list = [2, 3, 5]
+   
     all_results = []
     
     total_combinations = len(adx_thresholds) * len(atr_windows) * len(fixed_spreads) * len(max_balancing_attempts_list)
