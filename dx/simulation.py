@@ -120,11 +120,11 @@ if __name__ == '__main__':
                         help="The trading symbol to use (e.g., 'BTC', 'ETH')")
     args = parser.parse_args()
 
-    # --- 민감도 분석을 위한 파라미터 범위 설정 ---
-    adx_thresholds = [15, 20, 25]
-    atr_windows = [50, 100, 150]
-    fixed_spreads = [0.02, 0.03, 0.04]
-    max_balancing_attempts_list = [3, 5, 7]
+    # --- 민감도 분석을 위한 파라미터 범위 설정 (최적 지점 심층 탐사) ---
+    adx_thresholds = [18, 20, 22]
+    atr_windows = [90, 100, 110]
+    fixed_spreads = [0.03, 0.04, 0.05]
+    max_balancing_attempts_list = [4, 5, 6]
 
     all_results = []
     
