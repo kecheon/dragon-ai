@@ -13,6 +13,14 @@ def run_backtest(symbol: str):
     """
     연속적인 매매 사이클을 통해 동적 헤지 전략을 백테스팅합니다.
     """
+    # --- 백테스팅 주요 파라미터 ---
+    ADX_TRIGGER_THRESHOLD = 20.0
+    ATR_WINDOW = 100
+    FIXED_SPREAD = 0.05  # 5%
+    INITIAL_POSITION_SIZE = 1.0
+    START_DATE = "2025-01-01"
+    END_DATE = "2025-02-05"
+
     # 1. 데이터 로드 및 지표 계산
     print(f"'{symbol}'에 대한 데이터를 로드하고 기술적 지표를 계산합니다...")
     data = load_price_data(symbol)
@@ -26,7 +34,7 @@ def run_backtest(symbol: str):
     data.rename(columns={'ADX_14': 'adx', 'DMP_14': 'plus_di', 'DMN_14': 'minus_di'}, inplace=True)
     data.ta.atr(length=14, append=True)
     data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
-    data['atr_sma'] = data['atr'].rolling(window=100).mean()
+    data['atr_sma'] = data['atr'].rolling(window=ATR_WINDOW).mean()
     data.dropna(inplace=True)
     data.reset_index(inplace=True) # 인덱스를 리셋하여 정수 인덱스로 접근
     data.rename(columns={data.columns[0]: 'timestamp'}, inplace=True) # 첫 번째 컬럼(원래 인덱스)의 이름을 'timestamp'로 변경
@@ -35,13 +43,6 @@ def run_backtest(symbol: str):
     config = StrategyConfig()
     strategy = DynamicHedgeStrategy(config, logger=lambda x: None) # 백테스팅 중에는 로그 출력 끔
     
-    # --- 백테스팅 주요 파라미터 ---
-    ADX_TRIGGER_THRESHOLD = 15.0
-    ATR_WINDOW = 100
-    FIXED_SPREAD = 0.05  # 5%
-    INITIAL_POSITION_SIZE = 1.0
-    START_DATE = "2025-01-01"
-    END_DATE = "2025-02-05"
 
     cycle_results = []
     current_step = 0
