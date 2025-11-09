@@ -17,7 +17,7 @@ class StrategyConfig:
     StepCount: int = 4
     MaxUtilization: float = 0.8
     FeeRate: float = 0.0005
-    MaxBalancingAttempts: int = 5 # 균형화 시도 횟수 한도
+    MaxBalancingAttempts: int = 2 # 균형화 시도 횟수 한도
     ForcedCutRatio: float = 0.25 # Forced Cut 시 청산할 포지션 비율
     CycleStopLossRatio: float = -0.10 # 사이클 당 최대 손실률 (-10%)
     # 신규 종료 조건 임계값

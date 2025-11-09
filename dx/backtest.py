@@ -35,9 +35,13 @@ def run_backtest(symbol: str):
     config = StrategyConfig()
     strategy = DynamicHedgeStrategy(config, logger=lambda x: None) # 백테스팅 중에는 로그 출력 끔
     
+    # --- 백테스팅 주요 파라미터 ---
+    ADX_TRIGGER_THRESHOLD = 15.0
+    ATR_WINDOW = 100
+    FIXED_SPREAD = 0.05  # 5%
     INITIAL_POSITION_SIZE = 1.0
-    FIXED_SPREAD = 0.02
-    ADX_TRIGGER_THRESHOLD = 20.0
+    START_DATE = "2025-01-01"
+    END_DATE = "2025-02-05"
 
     cycle_results = []
     current_step = 0
@@ -104,7 +108,7 @@ def run_backtest(symbol: str):
                         balancing_attempts += 1
 
                 # 사이클 종료 조건 확인
-                if "EXIT" in status or ("STRATEGIC_CUT" in status and "NO_ACTION" not in status):
+                if "EXIT" in status:
                     break
             
             # 3. 사이클 결과 기록
