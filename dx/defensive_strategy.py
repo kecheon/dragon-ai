@@ -102,8 +102,12 @@ class DynamicHedgeStrategy:
         current_mode = self._get_current_mode(long_pos, short_pos)
         current_spread = abs(long_pos.entry_price - short_pos.entry_price)
 
-        # 1. 스프레드 목표 달성 종료 조건 (수익 발생 시)
-        if current_spread < self.config.SpreadExitThreshold and total_pnl > 0:
+        # 1. 종료 조건 (최우선)
+        if current_mode == StrategyMode.IMBALANCED and total_pnl > 0:
+            return "EXIT_PROFIT_TARGET_MET"
+        
+        # 스프레드 목표 달성 종료 조건
+        if current_spread < self.config.SpreadExitThreshold:
             return "EXIT_SPREAD_TARGET_MET"
 
         # 2. 행동 결정

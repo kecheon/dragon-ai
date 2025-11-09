@@ -102,7 +102,7 @@ def run_simulation(symbol: str):
                     u_loss=0, margin_usage=0.5
                 )
                 status = strategy.determine_next_action(long_pos, short_pos, acct_state, market_price,
-                                                      plus_di_now, minus_di_now, adx_now, balancing_attempts)
+                                                      plus_di_now, minus_di_now, adx_now, balancing_attempts,)
                 
                 # 행동 후 상태 변화 감지 및 카운터 증가
                 mode_after_action = strategy._get_current_mode(long_pos, short_pos)
