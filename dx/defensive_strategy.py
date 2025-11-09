@@ -19,6 +19,7 @@ class StrategyConfig:
     FeeRate: float = 0.0005
     MaxBalancingAttempts: int = 5 # 균형화 시도 횟수 한도
     ForcedCutRatio: float = 0.25 # Forced Cut 시 청산할 포지션 비율
+    CycleStopLossRatio: float = -0.10 # 사이클 당 최대 손실률 (-10%)
     # 신규 종료 조건 임계값
     SpreadExitThreshold: float = 0.1  # 스프레드가 이 값보다 작아지면 동시 청산
 
@@ -101,9 +102,7 @@ class DynamicHedgeStrategy:
         current_mode = self._get_current_mode(long_pos, short_pos)
         current_spread = abs(long_pos.entry_price - short_pos.entry_price)
 
-        # 1. 종료 조건 (최우선)
-        if current_mode == StrategyMode.IMBALANCED and total_pnl > 0:
-            return "EXIT_PROFIT_TARGET_MET"
+        # 1. 스프레드 목표 달성 종료 조건 (수익 발생 시)
         if current_spread < self.config.SpreadExitThreshold and total_pnl > 0:
             return "EXIT_SPREAD_TARGET_MET"
 

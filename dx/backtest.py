@@ -59,6 +59,11 @@ def run_backtest(symbol: str):
             balancing_attempts = 0
             max_drawdown = 0
             peak_pnl = -np.inf
+            profit_taking_mode = False # ADX 기반 이익 실현 모드 플래그
+
+            # 사이클 최대 손실 한도 설정
+            initial_value = (long_pos.entry_price * long_pos.initial_size) + (short_pos.entry_price * short_pos.initial_size)
+            stop_loss_amount = initial_value * abs(config.CycleStopLossRatio)
 
             # 2. 단일 사이클 진행
             for j in range(current_step, len(data) - 1):
@@ -74,8 +79,31 @@ def run_backtest(symbol: str):
                 if drawdown > max_drawdown:
                     max_drawdown = drawdown
 
-                # 전략 발동 조건
+                # *** 최종 안전장치: 사이클 최대 손실 도달 시 즉시 종료 ***
+                if not profit_taking_mode and current_pnl < -stop_loss_amount:
+                    status = "EXIT_STOP_LOSS"
+                    break
+                
                 adx_now = data['adx'].iloc[step_in_cycle]
+                plus_di_now = data['plus_di'].iloc[step_in_cycle]
+                minus_di_now = data['minus_di'].iloc[step_in_cycle]
+
+                # *** 수익 극대화: ADX 기반 이익 실현 ***
+                if current_pnl > 0:
+                    is_imbalanced = strategy._get_current_mode(long_pos, short_pos) == StrategyMode.IMBALANCED
+                    is_long_favorable = long_pos.size > short_pos.size and plus_di_now > minus_di_now
+                    is_short_favorable = short_pos.size > long_pos.size and minus_di_now > plus_di_now
+
+                    if is_imbalanced and (is_long_favorable or is_short_favorable):
+                        profit_taking_mode = True
+
+                if profit_taking_mode:
+                    adx_last = data['adx'].iloc[step_in_cycle - 1]
+                    if adx_now < adx_last:
+                        status = "EXIT_ADX_PEAK"
+                        break
+
+                # 전략 발동 조건
                 is_trending = adx_now > ADX_TRIGGER_THRESHOLD
                 is_volatile = data['atr'].iloc[step_in_cycle] > data['atr_sma'].iloc[step_in_cycle]
                 trigger_activated = is_trending and is_volatile
