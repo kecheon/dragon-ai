@@ -1,0 +1,2 @@
+adx_threshold,atr_window,fixed_spread,max_balancing_attempts,win_count,loss_count,total_count,win_rate
+15,100,0.02,3,1733,7734,9467,18.305693461497835
