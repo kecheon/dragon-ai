@@ -2,6 +2,7 @@ import argparse
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
+np.random.seed(42) # 백테스팅 재현성을 위해 난수 시드 고정
 from tqdm import tqdm
 
 # 우리가 만든 모듈들
@@ -91,7 +92,7 @@ def run_backtest(symbol: str):
                         balancing_attempts += 1
 
                 # 사이클 종료 조건 확인
-                if "EXIT" in status or ("FORCED_CUT" in status and "NO_ACTION" not in status):
+                if "EXIT" in status or ("STRATEGIC_CUT" in status and "NO_ACTION" not in status):
                     break
             
             # 3. 사이클 결과 기록

@@ -147,26 +147,20 @@ class DynamicHedgeStrategy:
         elif current_mode == StrategyMode.IMBALANCED:
             if total_pnl <= 0:
                 if balancing_attempts < self.config.MaxBalancingAttempts:
-                    # [행동] 개선된 방어적 균형화
+                    # [행동] 방어적 균형화
                     pos_to_avg, other_pos_entry, action_type = (long_pos, short_pos.entry_price, "DEFENSIVE_AVG_LONG") if long_pos.size < short_pos.size else (short_pos, long_pos.entry_price, "DEFENSIVE_AVG_SHORT")
                     
                     q = self.propose_qs(pos_to_avg)[0]
                     sim_res = self.simulate_averaging(pos_to_avg, q, self.get_est_exec_price(pos_to_avg.side, market_price), other_pos_entry)
                     
-                    # *** 개선된 조건: 더 유리한 가격에서만 물타기 ***
-                    is_favorable_price = (pos_to_avg.side == "LONG" and market_price < pos_to_avg.entry_price) or \
-                                         (pos_to_avg.side == "SHORT" and market_price > pos_to_avg.entry_price)
-
-                    if sim_res.dS < 0 and is_favorable_price and self.meets_financial_criteria(sim_res, acct):
+                    if sim_res.dS < 0 and self.meets_financial_criteria(sim_res, acct):
                         self.execute_averaging(pos_to_avg, q, market_price)
                         return f"ACTION_{action_type}"
                     else:
                         return "NO_VALID_ACTION_DEFENSIVE_AVG"
                 else:
-                    # [행동] 전략적 손절 (Strategic Cut) -> 강제로 Locked 모드 복귀
-                    self.log(f"  - 전략적 손절 발동 (균형화 시도 횟수: {balancing_attempts})")
+                    # [행동] 전략적 손절 (Strategic Cut)
                     pos_to_cut, other_pos, cut_side = (short_pos, long_pos, "SHORT") if plus_di_now > minus_di_now else (long_pos, short_pos, "LONG")
-                    
                     q_to_close = pos_to_cut.size - other_pos.size
                     
                     if q_to_close > 1e-9:
