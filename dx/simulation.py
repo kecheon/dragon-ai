@@ -109,10 +109,14 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # --- 민감도 분석을 위한 파라미터 범위 설정 ---
-    adx_thresholds = [15, 20, 25]
-    atr_windows = [50, 100, 150]
-    fixed_spreads = [0.01, 0.03, 0.05]
-    max_balancing_attempts_list = [2, 3, 5]
+    # adx_thresholds = [15, 20, 25]
+    # atr_windows = [50, 100, 150]
+    # fixed_spreads = [0.01, 0.03, 0.05]
+    # max_balancing_attempts_list = [2, 3, 5]
+    adx_thresholds = [20]
+    atr_windows = [100]
+    fixed_spreads = [0.03]
+    max_balancing_attempts_list = [2]
    
     all_results = []
     

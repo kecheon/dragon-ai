@@ -10,6 +10,17 @@ from dx.data_loader import load_price_data
 from dx.defensive_strategy import Position, AccountState, DynamicHedgeStrategy, StrategyMode
 from dx.signal_generator import StrategyConfig, generate_signals
 
+# 2. 백테스팅 설정
+# 통합된 StrategyConfig 객체 생성
+config = StrategyConfig(
+    adx_threshold=15.0,
+    atr_window=100,
+    MaxBalancingAttempts=2,
+    CycleStopLossRatio=-0.10,
+    SpreadExitThreshold=0.1,
+    LockedModePriority="DEFENSE"
+)
+
 def run_backtest(symbol: str):
     """
     연속적인 매매 사이클을 통해 동적 헤지 전략을 백테스팅합니다.
@@ -28,15 +39,7 @@ def run_backtest(symbol: str):
     data.ta.atr(length=14, append=True)
     data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
     
-    # 2. 백테스팅 설정
-    # 통합된 StrategyConfig 객체 생성
-    config = StrategyConfig(
-        adx_threshold=15.0,
-        atr_window=100,
-        MaxBalancingAttempts=2,
-        CycleStopLossRatio=-0.10,
-        SpreadExitThreshold=0.1
-    )
+
     
     # 신호 생성
     data = generate_signals(data, config)

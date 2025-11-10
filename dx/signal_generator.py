@@ -18,6 +18,8 @@ class StrategyConfig:
     """물타기(Averaging) 시 기존 포지션 대비 추가할 수량의 비율. (예: 0.5는 기존 수량의 50% 추가)"""
     PartialCloseRatio: float = 0.5
     """부분 익절(Partial Close) 시 청산할 수량의 비율. (예: 0.5는 기존 수량의 50% 청산)"""
+    LockedModePriority: str = "ATTACK"
+    """잠금(Locked) 모드에서 행동 우선순위. "ATTACK"은 공격적 진입(Averaging)을, "DEFENSE"는 수비적 진입(Partial Close)을 먼저 시도합니다."""
     MaxBalancingAttempts: int = 2
     """방어적 균형화(Defensive Averaging)를 시도할 수 있는 최대 횟수. 이 횟수를 초과하면 전략적 손절을 고려합니다."""
 
