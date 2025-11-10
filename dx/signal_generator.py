@@ -77,8 +77,8 @@ def generate_initial_signals(data: pd.DataFrame, config: StrategyConfig) -> pd.D
             # 2. 필터 조건: 추세 방향(EMA) 및 모멘텀(RSI)
             is_bullish_ema = not config.use_ema_filter or (data['ema_short'].iloc[i] > data['ema_long'].iloc[i])
             is_bearish_ema = not config.use_ema_filter or (data['ema_short'].iloc[i] < data['ema_long'].iloc[i])
-            is_bullish_rsi = not config.use_rsi_filter or (data['RSI_14'].iloc[i] > config.rsi_momentum_threshold)
-            is_bearish_rsi = not config.use_rsi_filter or (data['RSI_14'].iloc[i] < config.rsi_momentum_threshold)
+            is_bullish_rsi = not config.use_rsi_filter or (data['RSI_14'].iloc[i] > 1.2*config.rsi_momentum_threshold)
+            is_bearish_rsi = not config.use_rsi_filter or (data['RSI_14'].iloc[i] < 0.8*config.rsi_momentum_threshold)
 
             # 3. 최종 신호 결정
             # 상승 추세 조건이 모두 맞을 때
