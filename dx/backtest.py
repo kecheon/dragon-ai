@@ -169,27 +169,6 @@ def run_backtest(symbol: str):
     output_filename = f"backtest_results_{symbol}.csv"
     results_df.to_csv(output_filename, index=False)
 
-    print(f"\n백테스팅 완료. 결과가 '{output_filename}'에 저장되었습니다.")
-    
-    # 종합 성과 지표 출력
-    total_pnl = results_df['final_pnl'].sum()
-    total_cycles = len(results_df)
-    winning_cycles = len(results_df[results_df['final_pnl'] > 0])
-    win_rate = (winning_cycles / total_cycles) * 100 if total_cycles > 0 else 0
-    avg_pnl = results_df['final_pnl'].mean()
-    avg_duration = results_df['duration_in_steps'].mean()
-    
-    print("\n--- 백테스팅 종합 결과 ---")
-    print(f"전체 기간: {data['timestamp'].iloc[0]} ~ {data['timestamp'].iloc[-1]}")
-    print(f"총 매매 사이클: {total_cycles}회")
-    print(f"총 손익: {total_pnl:.2f}")
-    print(f"승률: {win_rate:.2f}%")
-    print(f"평균 손익 (사이클 당): {avg_pnl:.4f}")
-    print(f"평균 보유 기간 (5분봉 기준): {avg_duration:.2f} 스텝")
-    print("--------------------------")
-    print("\n종료 상태 분포:")
-    print(results_df['exit_status'].value_counts())
-
     # 모든 액션 카운트 출력
     if action_counts:
         print("\n--- 모든 액션 카운트 ---")
@@ -216,6 +195,27 @@ def run_backtest(symbol: str):
         print(reversal_cycles_attempted[['start_time', 'end_time', 'final_pnl', 'exit_status', 'reversal_attempted']].to_string(index=False))
     else:
         print("\n--- 지능형 방향 전환(ACTION_REVERSAL) 시도 사이클 없음 ---")
+
+    print(f"\n백테스팅 완료. 결과가 '{output_filename}'에 저장되었습니다.")
+    
+    # 종합 성과 지표 출력
+    total_pnl = results_df['final_pnl'].sum()
+    total_cycles = len(results_df)
+    winning_cycles = len(results_df[results_df['final_pnl'] > 0])
+    win_rate = (winning_cycles / total_cycles) * 100 if total_cycles > 0 else 0
+    avg_pnl = results_df['final_pnl'].mean()
+    avg_duration = results_df['duration_in_steps'].mean()
+    
+    print("\n--- 백테스팅 종합 결과 ---")
+    print(f"전체 기간: {data['timestamp'].iloc[0]} ~ {data['timestamp'].iloc[-1]}")
+    print(f"총 매매 사이클: {total_cycles}회")
+    print(f"총 손익: {total_pnl:.2f}")
+    print(f"승률: {win_rate:.2f}%")
+    print(f"평균 손익 (사이클 당): {avg_pnl:.4f}")
+    print(f"평균 보유 기간 (5분봉 기준): {avg_duration:.2f} 스텝")
+    print("--------------------------")
+    print("\n종료 상태 분포:")
+    print(results_df['exit_status'].value_counts())
 
 
 if __name__ == '__main__':
