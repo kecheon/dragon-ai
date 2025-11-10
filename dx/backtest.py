@@ -63,6 +63,7 @@ def run_backtest(symbol: str):
 
     cycle_results = []
     current_step = 0
+    action_counts = {} # 모든 액션의 카운트를 저장할 딕셔너리
     
     print("백테스팅을 시작합니다...")
     with tqdm(total=len(data)) as pbar:
@@ -125,6 +126,9 @@ def run_backtest(symbol: str):
                         data['plus_di'].iloc[step_in_cycle], data['minus_di'].iloc[step_in_cycle], 
                         data['adx'].iloc[step_in_cycle], balancing_attempts
                     )
+                    # 모든 액션 카운트
+                    action_counts[status] = action_counts.get(status, 0) + 1
+
                     mode_after = strategy._get_current_mode(long_pos, short_pos)
                     if mode_before == StrategyMode.IMBALANCED and mode_after == StrategyMode.LOCKED:
                         balancing_attempts += 1
@@ -185,6 +189,14 @@ def run_backtest(symbol: str):
     print("--------------------------")
     print("\n종료 상태 분포:")
     print(results_df['exit_status'].value_counts())
+
+    # 모든 액션 카운트 출력
+    if action_counts:
+        print("\n--- 모든 액션 카운트 ---")
+        # 카운트 기준으로 내림차순 정렬
+        sorted_actions = sorted(action_counts.items(), key=lambda item: item[1], reverse=True)
+        for action, count in sorted_actions:
+            print(f"{action:<40}: {count}")
 
     # EXIT_STOP_LOSS 및 EXIT_REVERSAL_STOP_LOSS 상세 기록 출력
     stop_loss_cycles = results_df[
