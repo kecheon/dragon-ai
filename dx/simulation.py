@@ -6,7 +6,7 @@ from tqdm import tqdm
 # 우리가 만든 모듈들
 from dx.data_loader import load_price_data
 from dx.defensive_strategy import Position, AccountState, DynamicHedgeStrategy, StrategyMode
-from dx.signal_generator import StrategyConfig, generate_signals
+from dx.signal_generator import StrategyConfig, generate_initial_signals
 
 def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
     """
@@ -24,7 +24,7 @@ def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
     data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
     
     # 2. 신호 생성
-    data = generate_signals(data, config)
+    data = generate_initial_signals(data, config)
     
     # 3. 시뮬레이션 설정
     strategy = DynamicHedgeStrategy(config, logger=lambda x: None)
@@ -56,7 +56,7 @@ def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
             
             market_price = data['Close'].iloc[current_step]
             
-            trigger_activated = data['signal'].iloc[current_step]
+            trigger_activated = data['trigger'].iloc[current_step]
 
             if trigger_activated:
                 mode_before = strategy._get_current_mode(long_pos, short_pos)

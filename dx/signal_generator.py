@@ -13,9 +13,21 @@ class StrategyConfig:
     atr_window: int = 100
     """ATR(Average True Range)의 이동평균을 계산하는 윈도우 크기. 변동성 판단에 사용됩니다."""
 
+    # --- 타점 개선 필터 (Entry Point Filter) ---
+    use_ema_filter: bool = True
+    """EMA 정배열/역배열을 추세 방향 필터로 사용할지 여부."""
+    ema_short_period: int = 50
+    """단기 EMA 계산에 사용될 기간."""
+    ema_long_period: int = 200
+    """장기 EMA 계산에 사용될 기간."""
+    use_rsi_filter: bool = True
+    """RSI를 모멘텀 필터로 사용할지 여부."""
+    rsi_momentum_threshold: int = 50
+    """RSI 모멘텀 판단 기준. (예: 50 이상이면 상승 모멘텀)"""
+
     # --- 포지션 관리 파라미터 (Position Management Parameters) ---
-    AveragingSizeRatio: float = 0.5
-    """물타기(Averaging) 시 기존 포지션 대비 추가할 수량의 비율. (예: 0.5는 기존 수량의 50% 추가)"""
+    AveragingSizeRatio: float = 1.5
+    """'과감한 물타기' 시 기존 포지션 대비 추가할 수량의 비율. (예: 1.5는 150% 추가)"""
     PartialCloseRatio: float = 0.5
     """부분 익절(Partial Close) 시 청산할 수량의 비율. (예: 0.5는 기존 수량의 50% 청산)"""
     LockedModePriority: str = "ATTACK"
@@ -41,43 +53,45 @@ class StrategyConfig:
     ReversalStopLossRatio: float = -0.03
     """'지능형 방향 전환' 직후에만 적용되는 특별 손절률. 일반 손절률보다 타이트하게 설정하여 휩소(Whipsaw) 손실을 제한합니다."""
 
-def generate_signals(data: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
+def generate_initial_signals(data: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     """
-    주어진 데이터프레임에 전략 진입/청산 신호를 생성합니다.
-
-    Args:
-        data (pd.DataFrame): 'adx', 'plus_di', 'minus_di', 'atr' 컬럼을 포함하는 가격 데이터.
-        config (StrategyConfig): 신호 생성에 필요한 파라미터 객체.
-
-    Returns:
-        pd.DataFrame: 'signal' 컬럼이 추가된 데이터프레임.
-                      'signal'은 전략을 발동시킬지 여부를 나타내는 boolean 값입니다.
+    백테스팅 시작 전에, 전체 데이터에 대해 기본적인 지표와 진입 신호를 미리 계산합니다.
+    EMA, RSI 필터를 추가하여 타점의 신뢰도를 높입니다.
     """
-    # ATR 이동평균 계산
+    # ATR 이동평균, EMA, RSI 계산
     data['atr_sma'] = data['atr'].rolling(window=config.atr_window).mean()
-    
-    # 결측치 제거
+    data[f'ema_short'] = data.ta.ema(length=config.ema_short_period)
+    data[f'ema_long'] = data.ta.ema(length=config.ema_long_period)
+    data.ta.rsi(append=True)
     data.dropna(inplace=True)
-
-    # 신호 생성
+    
+    # 기본적인 진입 트리거 신호 생성
     signals = []
     for i in range(len(data)):
-        adx_now = data['adx'].iloc[i]
-        plus_di_now = data['plus_di'].iloc[i]
-        minus_di_now = data['minus_di'].iloc[i]
-        
-        # 추세 조건: ADX가 임계값 이상이고, +DI와 -DI가 교차한 상태
-        is_trending = False
-        if adx_now > config.adx_threshold:
-            if (plus_di_now > minus_di_now) or (minus_di_now > plus_di_now):
-                is_trending = True
-        
-        # 변동성 조건: 현재 ATR이 ATR의 이동평균보다 큰 상태
+        # 1. 기본 조건: 추세 강도 및 변동성
+        is_trending = data['adx'].iloc[i] > config.adx_threshold
         is_volatile = data['atr'].iloc[i] > data['atr_sma'].iloc[i]
         
-        trigger_activated = is_trending and is_volatile
-        signals.append(trigger_activated)
+        signal = False
+        if is_trending and is_volatile:
+            # 2. 필터 조건: 추세 방향(EMA) 및 모멘텀(RSI)
+            is_bullish_ema = not config.use_ema_filter or (data['ema_short'].iloc[i] > data['ema_long'].iloc[i])
+            is_bearish_ema = not config.use_ema_filter or (data['ema_short'].iloc[i] < data['ema_long'].iloc[i])
+            is_bullish_rsi = not config.use_rsi_filter or (data['RSI_14'].iloc[i] > config.rsi_momentum_threshold)
+            is_bearish_rsi = not config.use_rsi_filter or (data['RSI_14'].iloc[i] < config.rsi_momentum_threshold)
+
+            # 3. 최종 신호 결정
+            # 상승 추세 조건이 모두 맞을 때
+            if data['plus_di'].iloc[i] > data['minus_di'].iloc[i] and is_bullish_ema and is_bullish_rsi:
+                signal = True
+            # 하락 추세 조건이 모두 맞을 때
+            elif data['minus_di'].iloc[i] > data['plus_di'].iloc[i] and is_bearish_ema and is_bearish_rsi:
+                signal = True
         
-    data['signal'] = signals
-    
+        signals.append(signal)
+        
+    data['trigger'] = signals
+    data.reset_index(inplace=True)
+    data.rename(columns={'Timestamp': 'timestamp'}, inplace=True)
+    data['timestamp'] = pd.to_datetime(data['timestamp'])
     return data

@@ -8,12 +8,12 @@ from tqdm import tqdm
 # 우리가 만든 모듈들
 from dx.data_loader import load_price_data
 from dx.defensive_strategy import Position, AccountState, DynamicHedgeStrategy, StrategyMode
-from dx.signal_generator import StrategyConfig, generate_signals
+from dx.signal_generator import StrategyConfig, generate_initial_signals
 
 # 2. 백테스팅 설정
 # 통합된 StrategyConfig 객체 생성
 config = StrategyConfig(
-    adx_threshold=15.0,
+    adx_threshold=25.0,
     atr_window=100,
     MaxBalancingAttempts=1,
     CycleStopLossRatio=-0.10,
@@ -40,10 +40,9 @@ def run_backtest(symbol: str):
     data.ta.atr(length=14, append=True)
     data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
     
-
     
-    # 신호 생성
-    data = generate_signals(data, config)
+    # 3. 초기 신호 생성 (진입 트리거)
+    data = generate_initial_signals(data, config)
     
     # 'Timestamp' 인덱스를 'timestamp' 컬럼으로 변환
     data.reset_index(inplace=True)
@@ -116,7 +115,7 @@ def run_backtest(symbol: str):
                     break
                 
                 # 전략 발동 조건
-                trigger_activated = data['signal'].iloc[step_in_cycle]
+                trigger_activated = data['trigger'].iloc[step_in_cycle]
 
                 status = "HOLD" # determine_next_action의 반환값을 받을 임시 변수
                 if trigger_activated:
@@ -168,15 +167,7 @@ def run_backtest(symbol: str):
     results_df = pd.DataFrame(cycle_results)
     output_filename = f"backtest_results_{symbol}.csv"
     results_df.to_csv(output_filename, index=False)
-
-    # 모든 액션 카운트 출력
-    if action_counts:
-        print("\n--- 모든 액션 카운트 ---")
-        # 카운트 기준으로 내림차순 정렬
-        sorted_actions = sorted(action_counts.items(), key=lambda item: item[1], reverse=True)
-        for action, count in sorted_actions:
-            print(f"{action:<40}: {count}")
-
+    
     # EXIT_STOP_LOSS 및 EXIT_REVERSAL_STOP_LOSS 상세 기록 출력
     stop_loss_cycles = results_df[
         (results_df['exit_status'] == 'EXIT_STOP_LOSS') | 
@@ -216,6 +207,14 @@ def run_backtest(symbol: str):
     print("--------------------------")
     print("\n종료 상태 분포:")
     print(results_df['exit_status'].value_counts())
+
+    # 모든 액션 카운트 출력
+    if action_counts:
+        print("\n--- 모든 액션 카운트 ---")
+        # 카운트 기준으로 내림차순 정렬
+        sorted_actions = sorted(action_counts.items(), key=lambda item: item[1], reverse=True)
+        for action, count in sorted_actions:
+            print(f"{action:<40}: {count}")
 
 
 if __name__ == '__main__':
