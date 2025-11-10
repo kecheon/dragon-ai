@@ -4,31 +4,15 @@ import pandas_ta as ta
 from tqdm import tqdm
 
 # 우리가 만든 모듈들
-from data_loader import load_price_data
-from defensive_strategy import StrategyConfig, Position, AccountState, DynamicHedgeStrategy, StrategyMode
+from dx.data_loader import load_price_data
+from dx.defensive_strategy import Position, AccountState, DynamicHedgeStrategy, StrategyMode
+from dx.signal_generator import StrategyConfig, generate_signals
 
-# 시뮬레이션을 위한 글로벌 설정 (트리거 조건 추가)
-INITIAL_POSITION_SIZE = 1.0
-FIXED_SPREAD = 0.02 # 왜 이값이 클수록 성과가  좋게 나오냐? 넉넉한 스프레드가 있어야 안심하고 물타기 되는 건가
-# 0.01 5891/3626
-# 0.02 5958/3557
-# 0.03 6173/3344
-# 0.04 6378/3139
-# 0.05 6389/3128
-# 0.06 0.04 보다 못함
-LOOKBACK_PERIOD = 120
-SIMULATION_WINDOW = 300
-# 새로운 시장 상황 트리거 임계값 (DMI 기반)
-ADX_TRIGGER_THRESHOLD = 15.0 # ADX가 이 값 이상일 때 추세 강하다고 판단
-DMI_CROSSOVER_THRESHOLD = 0 # +DI와 -DI의 교차 또는 우위 판단 기준 (0이면 단순 교차)
-
-ATR_WINDOW = 50
-
-def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spread: float, max_balancing_attempts: int):
+def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
     """
     주어진 파라미터로 단일 시뮬레이션을 실행하고 결과를 반환합니다.
     """
-    # 1. 데이터 로드 및 특성 계산
+    # 1. 데이터 로드 및 기본 지표 계산
     data = load_price_data(symbol)
     if data.empty:
         return None
@@ -38,10 +22,11 @@ def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spr
     data.rename(columns={'ADX_14': 'adx', 'DMP_14': 'plus_di', 'DMN_14': 'minus_di'}, inplace=True)
     data.ta.atr(length=14, append=True)
     data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
-    data['atr_sma'] = data['atr'].rolling(window=atr_window).mean()
-    data.dropna(inplace=True)
     
-    config = StrategyConfig(MaxBalancingAttempts=max_balancing_attempts)
+    # 2. 신호 생성
+    data = generate_signals(data, config)
+    
+    # 3. 시뮬레이션 설정
     strategy = DynamicHedgeStrategy(config, logger=lambda x: None)
     
     results = []
@@ -49,7 +34,10 @@ def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spr
     simulation_window = 300
     initial_position_size = 1.0
 
-    for i in range(lookback_period, len(data) - simulation_window):
+    for i in range(len(data) - simulation_window):
+        # lookback_period가 generate_signals에서 처리되었으므로, 인덱스를 0부터 시작
+        if i < lookback_period: continue
+
         base_price = data['Close'].iloc[i - lookback_period]
         
         long_pos = Position(side="LONG", entry_price=base_price * (1 + fixed_spread / 2), size=initial_position_size, initial_size=initial_position_size)
@@ -64,23 +52,18 @@ def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spr
 
         for j in range(simulation_window):
             current_step = i + j
+            if current_step >= len(data): break
+            
             market_price = data['Close'].iloc[current_step]
             
-            adx_now = data['adx'].iloc[current_step]
-            plus_di_now = data['plus_di'].iloc[current_step]
-            minus_di_now = data['minus_di'].iloc[current_step]
-            is_trending = False
-            if adx_now > adx_threshold:
-                if (plus_di_now > minus_di_now) or (minus_di_now > plus_di_now):
-                    is_trending = True
-            is_volatile = data['atr'].iloc[current_step] > data['atr_sma'].iloc[current_step]
-            trigger_activated = is_trending and is_volatile
+            trigger_activated = data['signal'].iloc[current_step]
 
             if trigger_activated:
                 mode_before = strategy._get_current_mode(long_pos, short_pos)
                 status = strategy.determine_next_action(
-                    long_pos, short_pos, AccountState(0, 0), market_price,
-                    data['plus_di'].iloc[current_step], data['minus_di'].iloc[current_step], adx_now, balancing_attempts
+                    long_pos, short_pos, AccountState(u_loss=0, margin_usage=0.5), market_price,
+                    data['plus_di'].iloc[current_step], data['minus_di'].iloc[current_step], 
+                    data['adx'].iloc[current_step], balancing_attempts
                 )
                 mode_after = strategy._get_current_mode(long_pos, short_pos)
                 if mode_before == StrategyMode.IMBALANCED and mode_after == StrategyMode.LOCKED:
@@ -109,10 +92,10 @@ def run_simulation(symbol: str, adx_threshold: float, atr_window: int, fixed_spr
     label_counts = results_df['label'].value_counts()
     
     return {
-        'adx_threshold': adx_threshold,
-        'atr_window': atr_window,
+        'adx_threshold': config.adx_threshold,
+        'atr_window': config.atr_window,
         'fixed_spread': fixed_spread,
-        'max_balancing_attempts': max_balancing_attempts,
+        'max_balancing_attempts': config.MaxBalancingAttempts,
         'win_count': label_counts.get(1, 0),
         'loss_count': label_counts.get(-1, 0),
         'total_count': len(results_df),
@@ -125,7 +108,7 @@ if __name__ == '__main__':
                         help="The trading symbol to use (e.g., 'BTC', 'ETH')")
     args = parser.parse_args()
 
-    # --- 민감도 분석을 위한 파라미터 범위 설정 (최적 지점 심층 탐사) ---
+    # --- 민감도 분석을 위한 파라미터 범위 설정 ---
     adx_thresholds = [15, 20, 25]
     atr_windows = [50, 100, 150]
     fixed_spreads = [0.01, 0.03, 0.05]
@@ -133,28 +116,31 @@ if __name__ == '__main__':
    
     all_results = []
     
-    total_combinations = len(adx_thresholds) * len(atr_windows) * len(fixed_spreads) * len(max_balancing_attempts_list)
-    pbar = tqdm(total=total_combinations, desc="Sensitivity Analysis")
-
-    print(f"'{args.symbol}'에 대한 민감도 분석을 시작합니다. 총 {total_combinations}개의 조합을 테스트합니다.")
-
-    for adx in adx_thresholds:
-        for atr in atr_windows:
-            for spread in fixed_spreads:
-                for attempts in max_balancing_attempts_list:
-                    result = run_simulation(
-                        symbol=args.symbol,
-                        adx_threshold=adx,
-                        atr_window=atr,
-                        fixed_spread=spread,
-                        max_balancing_attempts=attempts
-                    )
-                    if result:
-                        all_results.append(result)
-                    pbar.update(1)
+    param_combinations = [
+        (adx, atr, spread, attempts)
+        for adx in adx_thresholds
+        for atr in atr_windows
+        for spread in fixed_spreads
+        for attempts in max_balancing_attempts_list
+    ]
     
-    pbar.close()
+    print(f"'{args.symbol}'에 대한 민감도 분석을 시작합니다. 총 {len(param_combinations)}개의 조합을 테스트합니다.")
 
+    for adx, atr, spread, attempts in tqdm(param_combinations, desc="Sensitivity Analysis"):
+        # 통합된 StrategyConfig 객체 생성
+        config = StrategyConfig(
+            adx_threshold=adx,
+            atr_window=atr,
+            MaxBalancingAttempts=attempts
+        )
+        result = run_simulation(
+            symbol=args.symbol,
+            config=config, # 통합된 config 객체 전달
+            fixed_spread=spread
+        )
+        if result:
+            all_results.append(result)
+    
     # --- 최종 결과 집계 및 출력 ---
     if all_results:
         summary_df = pd.DataFrame(all_results)

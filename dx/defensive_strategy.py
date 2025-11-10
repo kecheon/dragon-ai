@@ -1,35 +1,19 @@
 from dataclasses import dataclass
-from typing import List, Dict, Any
-from enum import Enum, auto
+from enum import Enum
+from typing import Optional, List
+from dx.signal_generator import StrategyConfig # 통합된 StrategyConfig 임포트
 
-# --- 전략 모드 정의 ---
+# 전략 모드 정의
 class StrategyMode(Enum):
-    LOCKED = auto()      # 포지션 수량이 동일한 상태 (잠금 모드)
-    IMBALANCED = auto()  # 포지션 수량이 다른 상태 (불균형 모드)
+    LOCKED = "LOCKED"  # 롱/숏 포지션 수량이 동일한 상태
+    IMBALANCED = "IMBALANCED"  # 롱/숏 포지션 수량이 다른 상태
 
-# --- 최종 전략 설정 ---
-@dataclass
-class StrategyConfig:
-    SlipTolerance: float = 0.002
-    MaxAllowedΔM: float = 5
-    EpsilonLoss: float = 0.002
-    ATRSpikeFactor: float = 1.5
-    StepCount: int = 4
-    MaxUtilization: float = 0.8
-    FeeRate: float = 0.0005
-    MaxBalancingAttempts: int = 2 # 균형화 시도 횟수 한도
-    ForcedCutRatio: float = 0.25 # Forced Cut 시 청산할 포지션 비율
-    CycleStopLossRatio: float = -0.10 # 사이클 당 최대 손실률 (-10%)
-    # 신규 종료 조건 임계값
-    SpreadExitThreshold: float = 0.1  # 스프레드가 이 값보다 작아지면 동시 청산
-
-# --- 데이터 구조 ---
 @dataclass
 class Position:
     side: str
     entry_price: float
     size: float
-    initial_size: float # 포지션 불균형 상태를 추적하기 위함
+    initial_size: float # 초기 진입 시점의 포지션 크기 (물타기 전)
 
 @dataclass
 class AccountState:

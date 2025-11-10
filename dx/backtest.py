@@ -6,21 +6,14 @@ np.random.seed(42) # 백테스팅 재현성을 위해 난수 시드 고정
 from tqdm import tqdm
 
 # 우리가 만든 모듈들
-from data_loader import load_price_data
-from defensive_strategy import StrategyConfig, Position, AccountState, DynamicHedgeStrategy, StrategyMode
+from dx.data_loader import load_price_data
+from dx.defensive_strategy import Position, AccountState, DynamicHedgeStrategy, StrategyMode
+from dx.signal_generator import StrategyConfig, generate_signals
 
 def run_backtest(symbol: str):
     """
     연속적인 매매 사이클을 통해 동적 헤지 전략을 백테스팅합니다.
     """
-    # --- 백테스팅 주요 파라미터 ---
-    ADX_TRIGGER_THRESHOLD = 20.0
-    ATR_WINDOW = 100
-    FIXED_SPREAD = 0.05  # 5%
-    INITIAL_POSITION_SIZE = 1.0
-    START_DATE = "2025-01-01"
-    END_DATE = "2025-02-05"
-
     # 1. 데이터 로드 및 지표 계산
     print(f"'{symbol}'에 대한 데이터를 로드하고 기술적 지표를 계산합니다...")
     data = load_price_data(symbol)
@@ -34,15 +27,34 @@ def run_backtest(symbol: str):
     data.rename(columns={'ADX_14': 'adx', 'DMP_14': 'plus_di', 'DMN_14': 'minus_di'}, inplace=True)
     data.ta.atr(length=14, append=True)
     data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
-    data['atr_sma'] = data['atr'].rolling(window=ATR_WINDOW).mean()
-    data.dropna(inplace=True)
+    
+    # 2. 백테스팅 설정
+    # 통합된 StrategyConfig 객체 생성
+    config = StrategyConfig(
+        adx_threshold=15.0,
+        atr_window=100,
+        MaxBalancingAttempts=2,
+        CycleStopLossRatio=-0.10,
+        SpreadExitThreshold=0.1
+    )
+    
+    # 신호 생성
+    data = generate_signals(data, config)
+    
     data.reset_index(inplace=True) # 인덱스를 리셋하여 정수 인덱스로 접근
     data.rename(columns={data.columns[0]: 'timestamp'}, inplace=True) # 첫 번째 컬럼(원래 인덱스)의 이름을 'timestamp'로 변경
 
-    # 2. 백테스팅 설정
-    config = StrategyConfig()
     strategy = DynamicHedgeStrategy(config, logger=lambda x: None) # 백테스팅 중에는 로그 출력 끔
     
+    # --- 백테스팅 주요 파라미터 ---
+    FIXED_SPREAD = 0.05  # 5%
+    INITIAL_POSITION_SIZE = 1.0
+
+    # 기간 필터링
+    data['timestamp'] = pd.to_datetime(data['timestamp']) # timestamp 컬럼을 datetime으로 변환
+    if data.empty:
+        print(f"데이터가 없어 백테스팅을 중단합니다.")
+        return
 
     cycle_results = []
     current_step = 0
@@ -88,21 +100,16 @@ def run_backtest(symbol: str):
                     status = "EXIT_STOP_LOSS"
                     break
                 
-                adx_now = data['adx'].iloc[step_in_cycle]
-                plus_di_now = data['plus_di'].iloc[step_in_cycle]
-                minus_di_now = data['minus_di'].iloc[step_in_cycle]
-
                 # 전략 발동 조건
-                is_trending = adx_now > ADX_TRIGGER_THRESHOLD
-                is_volatile = data['atr'].iloc[step_in_cycle] > data['atr_sma'].iloc[step_in_cycle]
-                trigger_activated = is_trending and is_volatile
+                trigger_activated = data['signal'].iloc[step_in_cycle]
 
                 status = "HOLD"
                 if trigger_activated:
                     mode_before = strategy._get_current_mode(long_pos, short_pos)
                     status = strategy.determine_next_action(
                         long_pos, short_pos, AccountState(0, 0), market_price,
-                        data['plus_di'].iloc[step_in_cycle], data['minus_di'].iloc[step_in_cycle], adx_now, balancing_attempts
+                        data['plus_di'].iloc[step_in_cycle], data['minus_di'].iloc[step_in_cycle], 
+                        data['adx'].iloc[step_in_cycle], balancing_attempts
                     )
                     mode_after = strategy._get_current_mode(long_pos, short_pos)
                     if mode_before == StrategyMode.IMBALANCED and mode_after == StrategyMode.LOCKED:
