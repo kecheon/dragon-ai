@@ -31,7 +31,15 @@ class StrategyConfig:
     SpreadExitThreshold: float = 0.1
     """스프레드(롱/숏 진입 가격 차이)가 이 값보다 작아지면 포지션을 동시 청산하는 임계값. 방어적 탈출 조건으로 사용됩니다."""
     SlipTolerance: float = 0.0005
-    """거래 체결 시 예상 가격과 실제 체결 가격 간의 허용 가능한 오차(슬리피지) 비율. (예: 0.0005는 0.05% 슬리피지)"""
+    """거래 체결 시 예상 가격과 실제 체결 가격 간의 허용 가능한 오차(슬리피지) 비율. (예: 0.0005는 0.05%)"""
+
+    # --- 방향 전환 파라미터 (Intelligent Reversal Parameters) ---
+    ReversalPartialCloseRatio: float = 0.5
+    """'실수 인정' 시, 잘못 베팅했던 포지션을 청산하는 비율. (예: 0.5는 50% 청산)"""
+    ReversalAveragingRatio: float = 1.0
+    """'실수 인정' 후, 새로운 대세 방향의 포지션에 물타기하는 비율. (예: 1.0은 100% 추가)"""
+    ReversalStopLossRatio: float = -0.03
+    """'지능형 방향 전환' 직후에만 적용되는 특별 손절률. 일반 손절률보다 타이트하게 설정하여 휩소(Whipsaw) 손실을 제한합니다."""
 
 def generate_signals(data: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     """
@@ -50,7 +58,6 @@ def generate_signals(data: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame
     
     # 결측치 제거
     data.dropna(inplace=True)
-    data.reset_index(drop=True, inplace=True)
 
     # 신호 생성
     signals = []

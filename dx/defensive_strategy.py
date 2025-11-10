@@ -176,18 +176,25 @@ class DynamicHedgeStrategy:
                         return f"ACTION_{action_type}"
                     else:
                         return "NO_VALID_ACTION_DEFENSIVE_AVG"
-                # 균형화 시도 횟수 소진 시 -> 전략적 손절 (Strategic Cut)
+                # 균형화 시도 횟수 소진 시 -> 지능형 방향 전환 (Intelligent Reversal)
                 else:
-                    # 강제로 Locked 모드로 복귀시키기 위해 불리한 포지션을 필요한 만큼만 손절
-                    self.log(f"  - 전략적 손절 발동 (균형화 시도 횟수: {balancing_attempts})")
-                    pos_to_cut, other_pos, cut_side = (short_pos, long_pos, "SHORT") if plus_di_now > minus_di_now else (long_pos, short_pos, "LONG")
+                    self.log(f"  - 지능형 방향 전환 발동 (균형화 시도 횟수: {balancing_attempts})")
                     
-                    q_to_close = pos_to_cut.size - other_pos.size
+                    # 0. 포지션 결정
+                    # pos_to_reduce: 잘못 베팅했던 포지션 (더 많았던 쪽)
+                    # pos_to_increase: 새로운 대세 방향의 포지션 (더 적었던 쪽)
+                    pos_to_reduce, pos_to_increase = (long_pos, short_pos) if long_pos.size > short_pos.size else (short_pos, long_pos)
                     
+                    # 1. 부분 청산 (마진 확보)
+                    q_to_close = pos_to_reduce.size * self.config.ReversalPartialCloseRatio
                     if q_to_close > 1e-9:
-                        self.execute_partial_close(pos_to_cut, q_to_close, market_price)
-                        return f"ACTION_STRATEGIC_CUT_TO_LOCKED_{cut_side}"
-                    else:
-                        return "NO_ACTION_STRATEGIC_CUT_NO_QUANTITY"
+                        self.execute_partial_close(pos_to_reduce, q_to_close, market_price)
+
+                    # 2. 방향 전환 물타기 (대세 추종)
+                    q_to_increase = pos_to_increase.size * self.config.ReversalAveragingRatio
+                    if q_to_increase > 1e-9:
+                        self.execute_averaging(pos_to_increase, q_to_increase, market_price)
+
+                    return f"ACTION_REVERSAL_{pos_to_increase.side}"
 
         return "NO_ACTION"
