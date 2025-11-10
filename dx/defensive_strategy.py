@@ -171,11 +171,9 @@ class DynamicHedgeStrategy:
                     sim_res = self.simulate_averaging(pos_to_avg, q, self.get_est_exec_price(pos_to_avg.side, market_price), other_pos_entry)
                     
                     # 물타기 시 스프레드 감소 및 재무 조건 충족 시에만 실행
-                    if sim_res.dS < 0 and self.meets_financial_criteria(sim_res, acct):
-                        self.execute_averaging(pos_to_avg, q, market_price)
-                        return f"ACTION_{action_type}"
-                    else:
-                        return "NO_VALID_ACTION_DEFENSIVE_AVG"
+                    # 이제 조건 없이 무조건 실행하여 행동 불능 상태를 제거
+                    self.execute_averaging(pos_to_avg, q, market_price)
+                    return f"ACTION_{action_type}"
                 # 균형화 시도 횟수 소진 시 -> 지능형 방향 전환 (Intelligent Reversal)
                 else:
                     self.log(f"  - 지능형 방향 전환 발동 (균형화 시도 횟수: {balancing_attempts})")
