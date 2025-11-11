@@ -26,8 +26,10 @@ class StrategyConfig:
     """RSI 모멘텀 판단 기준. (예: 50 이상이면 상승 모멘텀)"""
 
     # --- 포지션 관리 파라미터 (Position Management Parameters) ---
-    AveragingSizeRatio: float = 1.5
-    """'과감한 물타기' 시 기존 포지션 대비 추가할 수량의 비율. (예: 1.5는 150% 추가)"""
+    AveragingSizeRatio: float = 1.0
+    """'과감한 물타기' 시 기존 포지션 대비 추가할 수량의 비율. (예: 1.0은 100% 추가)"""
+    MaxPositionSize: float = 5.0
+    """단일 포지션이 가질 수 있는 최대 크기. 기하급수적인 포지션 증가를 방지하여 리스크를 관리합니다."""
     PartialCloseRatio: float = 0.5
     """부분 익절(Partial Close) 시 청산할 수량의 비율. (예: 0.5는 기존 수량의 50% 청산)"""
     LockedModePriority: str = "ATTACK"

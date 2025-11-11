@@ -78,6 +78,7 @@ def run_backtest(symbol: str):
             
             cycle_start_step = current_step
             cycle_start_time = data['timestamp'].iloc[cycle_start_step]
+            cycle_realized_pnl = 0.0 # 사이클 동안 누적된 실현 손익
             balancing_attempts = 0
             max_drawdown = 0
             peak_pnl = -np.inf
@@ -96,35 +97,45 @@ def run_backtest(symbol: str):
                 market_price = data['Close'].iloc[step_in_cycle]
 
                 # PNL 및 MDD 추적
+                # 참고: current_pnl은 미실현 손익만을 나타냅니다.
                 current_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
                               ((short_pos.entry_price - market_price) * short_pos.size)
-                if current_pnl > peak_pnl:
-                    peak_pnl = current_pnl
-                drawdown = peak_pnl - current_pnl
+                
+                # 총 PNL (실현 + 미실현)을 기준으로 MDD 추적
+                total_current_pnl = current_pnl + cycle_realized_pnl
+                if total_current_pnl > peak_pnl:
+                    peak_pnl = total_current_pnl
+                drawdown = peak_pnl - total_current_pnl
                 if drawdown > max_drawdown:
                     max_drawdown = drawdown
 
                 # *** 방향 전환 후 특별 손절 라인 ***
-                if reversal_activated and current_pnl < -reversal_stop_loss_amount:
+                if reversal_activated and total_current_pnl < -reversal_stop_loss_amount:
                     cycle_exit_status = "EXIT_REVERSAL_STOP_LOSS"
                     break
 
-                # *** 최종 안전장치: 사이클 최대 손실 도달 시 즉시 종료 ***
-                if current_pnl < -stop_loss_amount:
-                    cycle_exit_status = "EXIT_STOP_LOSS"
-                    break
+                # # *** 최종 안전장치: 사이클 최대 손실 도달 시 즉시 종료 ***
+                # if total_current_pnl < -stop_loss_amount:
+                #     cycle_exit_status = "EXIT_STOP_LOSS"
+                #     break
+
+                stopLoss = total_current_pnl < -stop_loss_amount
                 
                 # 전략 발동 조건
-                trigger_activated = data['trigger'].iloc[step_in_cycle]
+                trigger_activated = data['trigger'].iloc[step_in_cycle] or stopLoss
 
                 status = "HOLD" # determine_next_action의 반환값을 받을 임시 변수
                 if trigger_activated:
                     mode_before = strategy._get_current_mode(long_pos, short_pos)
-                    status = strategy.determine_next_action(
+                    
+                    # 전략 실행 및 실현 손익 수신
+                    status, pnl_from_action = strategy.determine_next_action(
                         long_pos, short_pos, AccountState(0, 0), market_price,
                         data['plus_di'].iloc[step_in_cycle], data['minus_di'].iloc[step_in_cycle], 
                         data['adx'].iloc[step_in_cycle], balancing_attempts
                     )
+                    cycle_realized_pnl += pnl_from_action
+
                     # 모든 액션 카운트
                     action_counts[status] = action_counts.get(status, 0) + 1
 
@@ -136,17 +147,22 @@ def run_backtest(symbol: str):
                         reversal_activated = True
                         reversal_attempted_in_cycle = True # 방향 전환 시도 플래그 설정
                 
-                # status가 HOLD가 아니면 cycle_exit_status 업데이트
-                if status != "HOLD":
-                    cycle_exit_status = status
-
                 # 사이클 종료 조건 확인
                 if "EXIT" in status:
+                    cycle_exit_status = status
                     break
             
             # 3. 사이클 결과 기록
-            cycle_end_step = step_in_cycle
-            final_pnl = current_pnl
+            cycle_end_step = j # for 루프의 최종 스텝
+
+            # 루프가 명시적인 EXIT 없이 끝난 경우, 상태를 END_OF_DATA로 설정
+            if cycle_exit_status == "HOLD":
+                cycle_exit_status = "END_OF_DATA"
+
+            # 최종 손익 계산 (버그 수정): 마지막 거래가 반영된 포지션으로 미실현 손익을 다시 계산
+            final_unrealized_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
+                                   ((short_pos.entry_price - market_price) * short_pos.size)
+            final_pnl = final_unrealized_pnl + cycle_realized_pnl
             
             cycle_results.append({
                 'start_time': cycle_start_time,
@@ -155,8 +171,8 @@ def run_backtest(symbol: str):
                 'final_pnl': final_pnl,
                 'max_drawdown': max_drawdown,
                 'balancing_attempts': balancing_attempts,
-                'exit_status': cycle_exit_status, # 업데이트된 cycle_exit_status 사용
-                'reversal_attempted': reversal_attempted_in_cycle # 방향 전환 시도 여부 기록
+                'exit_status': cycle_exit_status,
+                'reversal_attempted': reversal_attempted_in_cycle
             })
 
             # 다음 사이클 시작 위치로 이동 및 pbar 업데이트

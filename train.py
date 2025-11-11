@@ -12,9 +12,9 @@ random.seed(42)
 # ====================================
 # === 1. 데이터 로딩 (캐시 우선)  ===
 # ====================================
-SYMBOL = 'SOLUSDT'
-TIMEFRAME = '5m'
-START_DATE = '2025-10-20T00:00:00Z'
+SYMBOL = 'ETHUSDT'
+TIMEFRAME = '15m'
+START_DATE = '2023-01-01T00:00:00Z'
 RAW_DATA_FILE = f"{SYMBOL}_{TIMEFRAME}_raw_data.csv"
 
 # 캐시 파일이 존재하면 파일에서 로드, 없으면 CCXT로 가져와서 저장

@@ -34,7 +34,7 @@ class DynamicHedgeStrategy:
         self.logger(message)
 
     def _get_current_mode(self, long_pos: Position, short_pos: Position) -> StrategyMode:
-        if long_pos.size == short_pos.size:
+        if abs(long_pos.size - short_pos.size) < 0.0001: # 부동소수점 비교를 위해 사용자가 지정한 허용오차 사용
             return StrategyMode.LOCKED
         return StrategyMode.IMBALANCED
 
@@ -78,46 +78,63 @@ class DynamicHedgeStrategy:
         pos.size += q
         self.log(f"  - {pos.side} 포지션 물타기 실행: {q:.2f} 추가, 새 평균 진입가: {pos.entry_price:.2f}")
 
-    def execute_partial_close(self, pos: Position, q: float, market_price: float):
-        """포지션 부분 청산 실행"""
+    def execute_partial_close(self, pos: Position, q: float, market_price: float) -> float:
+        """포지션 부분 청산 실행. 실현 손익을 반환."""
+        realized_pnl = 0.0
+        if pos.side == "LONG":
+            realized_pnl = (market_price - pos.entry_price) * q
+        else:  # SHORT
+            realized_pnl = (pos.entry_price - market_price) * q
+        
         pos.size -= q
-        self.log(f"  - {pos.side} 포지션 부분 청산 실행: {q:.2f} 감소")
+        self.log(f"  - {pos.side} 포지션 부분 청산 실행: {q:.2f} 감소, 실현 손익: {realized_pnl:.2f}")
+        return realized_pnl
 
     def _try_averaging(self, long_pos, short_pos, market_price, plus_di_now, minus_di_now, acct: AccountState):
-        """공격적 진입(Averaging) 시도"""
+        """공격적 진입(Averaging) 시도. (액션, 실현손익) 튜플 반환"""
         pos_to_avg, other_pos, trend = (long_pos, short_pos, "LONG") if plus_di_now > minus_di_now else (short_pos, long_pos, "SHORT")
         
         # 물타기 시도 전에 포지션 크기가 0이 아닌지 확인
         if pos_to_avg.size <= 1e-9: # 너무 작은 포지션은 물타기 안함
-            return "NO_ACTION"
+            return "NO_ACTION", 0.0
 
         q = self.propose_qs(pos_to_avg)[0]
         sim_res = self.simulate_averaging(pos_to_avg, q, self.get_est_exec_price(pos_to_avg.side, market_price), other_pos.entry_price)
         
         if sim_res.dS < 0 and self.meets_financial_criteria(sim_res, acct):
             self.execute_averaging(pos_to_avg, q, market_price)
-            return f"ACTION_AVG_{trend}_TREND"
-        return "NO_ACTION"
+            return f"ACTION_AVG_{trend}_TREND", 0.0
+        return "NO_ACTION", 0.0
 
     def _try_partial_close(self, long_pos, short_pos, market_price, plus_di_now, minus_di_now):
-        """수비적 진입(Partial Close) 시도"""
+        """수비적 진입(Partial Close) 시도. (액션, 실현손익) 튜플 반환"""
         # 현재 추세에 반대되는 포지션을 부분 청산
+        long_pnl = long_pos.size * (long_pos.entry_price - market_price)
+        short_pnl = short_pos.size * (market_price - short_pos.entry_price)
+
         pos_to_close, trend = (short_pos, "LONG") if plus_di_now > minus_di_now else (long_pos, "SHORT")
         
+        if trend == "LONG":
+            if short_pnl < 0:
+                return "NO_ACTION", 0.0
+        else:
+            if long_pnl < 0:
+                return "NO_ACTION", 0.0
+
         # 청산할 포지션 크기가 0이 아닌지 확인
-        if pos_to_close.size <= 1e-9: # 너무 작은 포지션은 청산 안함
-            return "NO_ACTION"
+        if pos_to_close.size <= 0.0001: # 너무 작은 포지션은 청산 안함
+            return "NO_ACTION", 0.0
 
         q_to_close = pos_to_close.size * self.config.PartialCloseRatio
-        if q_to_close > 1e-9:
-            self.execute_partial_close(pos_to_close, q_to_close, market_price)
-            return f"ACTION_PARTIAL_CLOSE_{trend}"
-        return "NO_ACTION"
+        if q_to_close > 0.0001:
+            realized_pnl = self.execute_partial_close(pos_to_close, q_to_close, market_price)
+            return f"ACTION_PARTIAL_CLOSE_{trend}", realized_pnl
+        return "NO_ACTION", 0.0
 
     def determine_next_action(self, long_pos: Position, short_pos: Position, acct: AccountState, market_price: float,
-                              plus_di_now: float, minus_di_now: float, adx_now: float, balancing_attempts: int) -> str:
+                              plus_di_now: float, minus_di_now: float, adx_now: float, balancing_attempts: int) -> (str, float):
         """
-        현재 상태를 진단하고, 다음 행동을 결정하여 문자열로 반환합니다.
+        현재 상태를 진단하고, 다음 행동과 실현 손익을 결정하여 (str, float) 튜플로 반환합니다.
         """
         total_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
                     ((short_pos.entry_price - market_price) * short_pos.size)
@@ -127,11 +144,11 @@ class DynamicHedgeStrategy:
 
         # 1. 종료 조건 (최우선)
         if current_mode == StrategyMode.IMBALANCED and total_pnl > 0:
-            return "EXIT_PROFIT_TARGET_MET"
+            return "EXIT_PROFIT_TARGET_MET", 0.0
         
         # 스프레드 목표 달성 종료 조건
         if current_spread < self.config.SpreadExitThreshold:
-            return "EXIT_SPREAD_TARGET_MET"
+            return "EXIT_SPREAD_TARGET_MET", 0.0
 
         # 2. 행동 결정
         # 2a. [잠금 모드]에서의 행동
@@ -139,22 +156,22 @@ class DynamicHedgeStrategy:
             # Config에 따라 공격 우선 또는 수비 우선 순서로 행동 결정
             if self.config.LockedModePriority == "ATTACK":
                 # 1순위: 공격적 진입 (Averaging)
-                action = self._try_averaging(long_pos, short_pos, market_price, plus_di_now, minus_di_now, acct)
+                action, pnl = self._try_averaging(long_pos, short_pos, market_price, plus_di_now, minus_di_now, acct)
                 if action != "NO_ACTION":
-                    return action
+                    return action, pnl
                 # 2순위: 수비적 진입 (Partial Close)
-                action = self._try_partial_close(long_pos, short_pos, market_price, plus_di_now, minus_di_now)
+                action, pnl = self._try_partial_close(long_pos, short_pos, market_price, plus_di_now, minus_di_now)
                 if action != "NO_ACTION":
-                    return action
+                    return action, pnl
             else: # "DEFENSE" 우선
                 # 1순위: 수비적 진입 (Partial Close)
-                action = self._try_partial_close(long_pos, short_pos, market_price, plus_di_now, minus_di_now)
+                action, pnl = self._try_partial_close(long_pos, short_pos, market_price, plus_di_now, minus_di_now)
                 if action != "NO_ACTION":
-                    return action
+                    return action, pnl
                 # 2순위: 공격적 진입 (Averaging)
-                action = self._try_averaging(long_pos, short_pos, market_price, plus_di_now, minus_di_now, acct)
+                action, pnl = self._try_averaging(long_pos, short_pos, market_price, plus_di_now, minus_di_now, acct)
                 if action != "NO_ACTION":
-                    return action
+                    return action, pnl
         
         # 2b. [불균형 모드]에서의 행동
         elif current_mode == StrategyMode.IMBALANCED:
@@ -166,33 +183,35 @@ class DynamicHedgeStrategy:
                     pos_to_avg, other_pos, action_type = (long_pos, short_pos, "DEFENSIVE_AVG_LONG") if long_pos.size < short_pos.size else (short_pos, long_pos, "DEFENSIVE_AVG_SHORT")
                     other_pos_entry = other_pos.entry_price
                     
-                    # 여러 제안 사이즈 중 최적의 것을 선택 (현재는 첫번째 것만 사용)
-                    q = self.propose_qs(pos_to_avg)[0]
+                    # 버그 수정: 균형을 맞추기 위해 필요한 정확한 수량 'q'를 계산합니다.
+                    # 기존 로직은 'propose_qs'를 사용하여 균형을 맞추지 못했습니다.
+                    q = other_pos.size - pos_to_avg.size
+                    if q <= 0.0001: # 추가할 수량이 매우 작으면 행동하지 않음 (사용자 지정 허용오차)
+                        return "NO_ACTION", 0.0
+                    
                     sim_res = self.simulate_averaging(pos_to_avg, q, self.get_est_exec_price(pos_to_avg.side, market_price), other_pos_entry)
                     
-                    # 물타기 시 스프레드 감소 및 재무 조건 충족 시에만 실행
-                    # 이제 조건 없이 무조건 실행하여 행동 불능 상태를 제거
                     self.execute_averaging(pos_to_avg, q, market_price)
-                    return f"ACTION_{action_type}"
+                    return f"ACTION_{action_type}", 0.0
                 # 균형화 시도 횟수 소진 시 -> 지능형 방향 전환 (Intelligent Reversal)
                 else:
                     self.log(f"  - 지능형 방향 전환 발동 (균형화 시도 횟수: {balancing_attempts})")
+                    realized_pnl = 0.0
                     
                     # 0. 포지션 결정
-                    # pos_to_reduce: 잘못 베팅했던 포지션 (더 많았던 쪽)
-                    # pos_to_increase: 새로운 대세 방향의 포지션 (더 적었던 쪽)
                     pos_to_reduce, pos_to_increase = (long_pos, short_pos) if long_pos.size > short_pos.size else (short_pos, long_pos)
                     
                     # 1. 부분 청산 (마진 확보)
                     q_to_close = pos_to_reduce.size * self.config.ReversalPartialCloseRatio
                     if q_to_close > 1e-9:
-                        self.execute_partial_close(pos_to_reduce, q_to_close, market_price)
+                        pnl = self.execute_partial_close(pos_to_reduce, q_to_close, market_price)
+                        realized_pnl += pnl
 
                     # 2. 방향 전환 물타기 (대세 추종)
                     q_to_increase = pos_to_increase.size * self.config.ReversalAveragingRatio
                     if q_to_increase > 1e-9:
                         self.execute_averaging(pos_to_increase, q_to_increase, market_price)
 
-                    return f"ACTION_REVERSAL_{pos_to_increase.side}"
+                    return f"ACTION_REVERSAL_{pos_to_increase.side}", realized_pnl
 
-        return "NO_ACTION"
+        return "NO_ACTION", 0.0
