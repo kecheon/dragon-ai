@@ -2,12 +2,18 @@ import argparse
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
-np.random.seed(42) # 백테스팅 재현성을 위해 난수 시드 고정
+
+np.random.seed(42)  # 백테스팅 재현성을 위해 난수 시드 고정
 from tqdm import tqdm
 
 # 우리가 만든 모듈들
 from dx.data_loader import load_price_data
-from dx.defensive_strategy import Position, AccountState, DynamicHedgeStrategy, StrategyMode
+from dx.defensive_strategy import (
+    Position,
+    AccountState,
+    DynamicHedgeStrategy,
+    StrategyMode,
+)
 from dx.signal_generator import StrategyConfig, generate_initial_signals
 
 # 2. 백테스팅 설정
@@ -18,9 +24,13 @@ config = StrategyConfig(
     MaxBalancingAttempts=1,
     CycleStopLossRatio=-0.10,
     SpreadExitThreshold=0.1,
-    LockedModePriority="ATTACK",
-    ReversalStopLossRatio=-0.1,
+    LockedModePriority="DEFENSE",
+    ReversalStopLossRatio=-0.05,
 )
+# --- 백테스팅 주요 파라미터 ---
+FIXED_SPREAD = 0.02  # 5%
+INITIAL_POSITION_SIZE = 1.0
+
 
 def run_backtest(symbol: str):
     """
@@ -36,24 +46,24 @@ def run_backtest(symbol: str):
     # ADX/DMI 및 변동성(ATR) 지표 계산
     dmi_df = data.ta.adx(length=14)
     data = data.join(dmi_df)
-    data.rename(columns={'ADX_14': 'adx', 'DMP_14': 'plus_di', 'DMN_14': 'minus_di'}, inplace=True)
+    data.rename(
+        columns={"ADX_14": "adx", "DMP_14": "plus_di", "DMN_14": "minus_di"},
+        inplace=True,
+    )
     data.ta.atr(length=14, append=True)
-    data.rename(columns={'ATRr_14': 'atr'}, inplace=True)
-    
-    
+    data.rename(columns={"ATRr_14": "atr"}, inplace=True)
+
     # 3. 초기 신호 생성 (진입 트리거)
     data = generate_initial_signals(data, config)
-    
+
     # 'Timestamp' 인덱스를 'timestamp' 컬럼으로 변환
     data.reset_index(inplace=True)
-    data.rename(columns={'Timestamp': 'timestamp'}, inplace=True)
-    data['timestamp'] = pd.to_datetime(data['timestamp'])
+    data.rename(columns={"Timestamp": "timestamp"}, inplace=True)
+    data["timestamp"] = pd.to_datetime(data["timestamp"])
 
-    strategy = DynamicHedgeStrategy(config, logger=lambda x: None) # 백테스팅 중에는 로그 출력 끔
-    
-    # --- 백테스팅 주요 파라미터 ---
-    FIXED_SPREAD = 0.05  # 5%
-    INITIAL_POSITION_SIZE = 1.0
+    strategy = DynamicHedgeStrategy(
+        config, logger=lambda x: None
+    )  # 백테스팅 중에는 로그 출력 끔
 
     # 기간 필터링
     if data.empty:
@@ -62,45 +72,62 @@ def run_backtest(symbol: str):
 
     cycle_results = []
     current_step = 0
-    action_counts = {} # 모든 액션의 카운트를 저장할 딕셔너리
-    
+    action_counts = {}  # 모든 액션의 카운트를 저장할 딕셔너리
+
     print("백테스팅을 시작합니다...")
     with tqdm(total=len(data)) as pbar:
         while current_step < len(data) - 1:
             # --- 새로운 사이클 시작 ---
-            
+
             # 1. 현실적인 진입 가격 설정
             price_variation = np.random.uniform(-0.04, 0.04)
-            base_price = data['Close'].iloc[current_step] * (1 + price_variation)
-            
-            long_pos = Position(side="LONG", entry_price=base_price * (1 + FIXED_SPREAD / 2), size=INITIAL_POSITION_SIZE, initial_size=INITIAL_POSITION_SIZE)
-            short_pos = Position(side="SHORT", entry_price=base_price * (1 - FIXED_SPREAD / 2), size=INITIAL_POSITION_SIZE, initial_size=INITIAL_POSITION_SIZE)
-            
+            base_price = data["Close"].iloc[current_step] * (1 + price_variation)
+
+            long_pos = Position(
+                side="LONG",
+                entry_price=base_price * (1 + FIXED_SPREAD / 2),
+                size=INITIAL_POSITION_SIZE,
+                initial_size=INITIAL_POSITION_SIZE,
+            )
+            short_pos = Position(
+                side="SHORT",
+                entry_price=base_price * (1 - FIXED_SPREAD / 2),
+                size=INITIAL_POSITION_SIZE,
+                initial_size=INITIAL_POSITION_SIZE,
+            )
+
             cycle_start_step = current_step
-            cycle_start_time = data['timestamp'].iloc[cycle_start_step]
-            cycle_realized_pnl = 0.0 # 사이클 동안 누적된 실현 손익
+            cycle_start_time = data["timestamp"].iloc[cycle_start_step]
+            cycle_realized_pnl = 0.0  # 사이클 동안 누적된 실현 손익
             balancing_attempts = 0
             max_drawdown = 0
             peak_pnl = -np.inf
-            reversal_activated = False # 지능형 방향 전환 후 특별 손절 적용 플래그
-            reversal_attempted_in_cycle = False # 지능형 방향 전환 시도 여부 기록 플래그
-            cycle_exit_status = "HOLD" # 사이클의 최종 종료 상태를 추적
+            reversal_activated = False  # 지능형 방향 전환 후 특별 손절 적용 플래그
+            reversal_attempted_in_cycle = (
+                False  # 지능형 방향 전환 시도 여부 기록 플래그
+            )
+            cycle_exit_status = "HOLD"  # 사이클의 최종 종료 상태를 추적
 
             # 사이클 최대 손실 한도 설정
-            initial_value = (long_pos.entry_price * long_pos.initial_size) + (short_pos.entry_price * short_pos.initial_size)
+            initial_value = (long_pos.entry_price * long_pos.initial_size) + (
+                short_pos.entry_price * short_pos.initial_size
+            )
             stop_loss_amount = initial_value * abs(config.CycleStopLossRatio)
-            reversal_stop_loss_amount = initial_value * abs(config.ReversalStopLossRatio)
+            reversal_stop_loss_amount = initial_value * abs(
+                config.ReversalStopLossRatio
+            )
 
             # 2. 단일 사이클 진행
             for j in range(current_step, len(data) - 1):
                 step_in_cycle = j
-                market_price = data['Close'].iloc[step_in_cycle]
+                market_price = data["Close"].iloc[step_in_cycle]
 
                 # PNL 및 MDD 추적
                 # 참고: current_pnl은 미실현 손익만을 나타냅니다.
-                current_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
-                              ((short_pos.entry_price - market_price) * short_pos.size)
-                
+                current_pnl = (
+                    (market_price - long_pos.entry_price) * long_pos.size
+                ) + ((short_pos.entry_price - market_price) * short_pos.size)
+
                 # 총 PNL (실현 + 미실현)을 기준으로 MDD 추적
                 total_current_pnl = current_pnl + cycle_realized_pnl
                 if total_current_pnl > peak_pnl:
@@ -110,7 +137,10 @@ def run_backtest(symbol: str):
                     max_drawdown = drawdown
 
                 # *** 방향 전환 후 특별 손절 라인 ***
-                if reversal_activated and total_current_pnl < -reversal_stop_loss_amount:
+                if (
+                    reversal_activated
+                    and total_current_pnl < -reversal_stop_loss_amount
+                ):
                     cycle_exit_status = "EXIT_REVERSAL_STOP_LOSS"
                     break
 
@@ -120,19 +150,25 @@ def run_backtest(symbol: str):
                 #     break
 
                 stopLoss = total_current_pnl < -stop_loss_amount
-                
-                # 전략 발동 조건
-                trigger_activated = data['trigger'].iloc[step_in_cycle] or stopLoss
 
-                status = "HOLD" # determine_next_action의 반환값을 받을 임시 변수
+                # 전략 발동 조건
+                trigger_activated = data["trigger"].iloc[step_in_cycle] or stopLoss
+
+                status = "HOLD"  # determine_next_action의 반환값을 받을 임시 변수
                 if trigger_activated:
                     mode_before = strategy._get_current_mode(long_pos, short_pos)
-                    
+
                     # 전략 실행 및 실현 손익 수신
                     status, pnl_from_action = strategy.determine_next_action(
-                        long_pos, short_pos, AccountState(0, 0), market_price,
-                        data['plus_di'].iloc[step_in_cycle], data['minus_di'].iloc[step_in_cycle], 
-                        data['adx'].iloc[step_in_cycle], balancing_attempts
+                        long_pos,
+                        short_pos,
+                        AccountState(0, 0),
+                        market_price,
+                        data["plus_di"].iloc[step_in_cycle],
+                        data["minus_di"].iloc[step_in_cycle],
+                        data["adx"].iloc[step_in_cycle],
+                        balancing_attempts,
+                        cycle_realized_pnl,
                     )
                     cycle_realized_pnl += pnl_from_action
 
@@ -140,40 +176,46 @@ def run_backtest(symbol: str):
                     action_counts[status] = action_counts.get(status, 0) + 1
 
                     mode_after = strategy._get_current_mode(long_pos, short_pos)
-                    if mode_before == StrategyMode.IMBALANCED and mode_after == StrategyMode.LOCKED:
+                    if (
+                        mode_before == StrategyMode.IMBALANCED
+                        and mode_after == StrategyMode.LOCKED
+                    ):
                         balancing_attempts += 1
-                    
+
                     if "ACTION_REVERSAL" in status:
                         reversal_activated = True
-                        reversal_attempted_in_cycle = True # 방향 전환 시도 플래그 설정
-                
+                        reversal_attempted_in_cycle = True  # 방향 전환 시도 플래그 설정
+
                 # 사이클 종료 조건 확인
                 if "EXIT" in status:
                     cycle_exit_status = status
                     break
-            
+
             # 3. 사이클 결과 기록
-            cycle_end_step = j # for 루프의 최종 스텝
+            cycle_end_step = j  # for 루프의 최종 스텝
 
             # 루프가 명시적인 EXIT 없이 끝난 경우, 상태를 END_OF_DATA로 설정
             if cycle_exit_status == "HOLD":
                 cycle_exit_status = "END_OF_DATA"
 
             # 최종 손익 계산 (버그 수정): 마지막 거래가 반영된 포지션으로 미실현 손익을 다시 계산
-            final_unrealized_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
-                                   ((short_pos.entry_price - market_price) * short_pos.size)
+            final_unrealized_pnl = (
+                (market_price - long_pos.entry_price) * long_pos.size
+            ) + ((short_pos.entry_price - market_price) * short_pos.size)
             final_pnl = final_unrealized_pnl + cycle_realized_pnl
-            
-            cycle_results.append({
-                'start_time': cycle_start_time,
-                'end_time': data['timestamp'].iloc[cycle_end_step],
-                'duration_in_steps': cycle_end_step - cycle_start_step,
-                'final_pnl': final_pnl,
-                'max_drawdown': max_drawdown,
-                'balancing_attempts': balancing_attempts,
-                'exit_status': cycle_exit_status,
-                'reversal_attempted': reversal_attempted_in_cycle
-            })
+
+            cycle_results.append(
+                {
+                    "start_time": cycle_start_time,
+                    "end_time": data["timestamp"].iloc[cycle_end_step],
+                    "duration_in_steps": cycle_end_step - cycle_start_step,
+                    "final_pnl": final_pnl,
+                    "max_drawdown": max_drawdown,
+                    "balancing_attempts": balancing_attempts,
+                    "exit_status": cycle_exit_status,
+                    "reversal_attempted": reversal_attempted_in_cycle,
+                }
+            )
 
             # 다음 사이클 시작 위치로 이동 및 pbar 업데이트
             pbar.update(cycle_end_step - current_step + 1)
@@ -183,36 +225,50 @@ def run_backtest(symbol: str):
     results_df = pd.DataFrame(cycle_results)
     output_filename = f"backtest_results_{symbol}.csv"
     results_df.to_csv(output_filename, index=False)
-    
+
     # EXIT_STOP_LOSS 및 EXIT_REVERSAL_STOP_LOSS 상세 기록 출력
     stop_loss_cycles = results_df[
-        (results_df['exit_status'] == 'EXIT_STOP_LOSS') | 
-        (results_df['exit_status'] == 'EXIT_REVERSAL_STOP_LOSS')
+        (results_df["exit_status"] == "EXIT_STOP_LOSS")
+        | (results_df["exit_status"] == "EXIT_REVERSAL_STOP_LOSS")
     ]
     if not stop_loss_cycles.empty:
         print("\n--- 손절(STOP_LOSS) 발생 사이클 상세 ---")
-        print(stop_loss_cycles[['start_time', 'end_time', 'final_pnl', 'exit_status']].to_string(index=False))
+        print(
+            stop_loss_cycles[
+                ["start_time", "end_time", "final_pnl", "exit_status"]
+            ].to_string(index=False)
+        )
     else:
         print("\n--- 손절(STOP_LOSS) 발생 사이클 없음 ---")
 
     # ACTION_REVERSAL 상세 기록 출력
-    reversal_cycles_attempted = results_df[results_df['reversal_attempted'] == True]
+    reversal_cycles_attempted = results_df[results_df["reversal_attempted"] == True]
     if not reversal_cycles_attempted.empty:
         print("\n--- 지능형 방향 전환(ACTION_REVERSAL) 시도 사이클 상세 ---")
-        print(reversal_cycles_attempted[['start_time', 'end_time', 'final_pnl', 'exit_status', 'reversal_attempted']].to_string(index=False))
+        print(
+            reversal_cycles_attempted[
+                [
+                    "start_time",
+                    "end_time",
+                    "final_pnl",
+                    "exit_status",
+                    "reversal_attempted",
+                ]
+            ].to_string(index=False)
+        )
     else:
         print("\n--- 지능형 방향 전환(ACTION_REVERSAL) 시도 사이클 없음 ---")
 
     print(f"\n백테스팅 완료. 결과가 '{output_filename}'에 저장되었습니다.")
-    
+
     # 종합 성과 지표 출력
-    total_pnl = results_df['final_pnl'].sum()
+    total_pnl = results_df["final_pnl"].sum()
     total_cycles = len(results_df)
-    winning_cycles = len(results_df[results_df['final_pnl'] > 0])
+    winning_cycles = len(results_df[results_df["final_pnl"] > 0])
     win_rate = (winning_cycles / total_cycles) * 100 if total_cycles > 0 else 0
-    avg_pnl = results_df['final_pnl'].mean()
-    avg_duration = results_df['duration_in_steps'].mean()
-    
+    avg_pnl = results_df["final_pnl"].mean()
+    avg_duration = results_df["duration_in_steps"].mean()
+
     print("\n--- 백테스팅 종합 결과 ---")
     print(f"전체 기간: {data['timestamp'].iloc[0]} ~ {data['timestamp'].iloc[-1]}")
     print(f"총 매매 사이클: {total_cycles}회")
@@ -222,20 +278,28 @@ def run_backtest(symbol: str):
     print(f"평균 보유 기간 (5분봉 기준): {avg_duration:.2f} 스텝")
     print("--------------------------")
     print("\n종료 상태 분포:")
-    print(results_df['exit_status'].value_counts())
+    print(results_df["exit_status"].value_counts())
 
     # 모든 액션 카운트 출력
     if action_counts:
         print("\n--- 모든 액션 카운트 ---")
         # 카운트 기준으로 내림차순 정렬
-        sorted_actions = sorted(action_counts.items(), key=lambda item: item[1], reverse=True)
+        sorted_actions = sorted(
+            action_counts.items(), key=lambda item: item[1], reverse=True
+        )
         for action, count in sorted_actions:
             print(f"{action:<40}: {count}")
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run continuous backtest for the dynamic hedge strategy.')
-    parser.add_argument('--symbol', type=str, default='ETHUSDT',
-                        help="The trading symbol to use (e.g., 'BTCUSDT', 'ETHUSDT')")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Run continuous backtest for the dynamic hedge strategy."
+    )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default="ETHUSDT",
+        help="The trading symbol to use (e.g., 'BTCUSDT', 'ETHUSDT')",
+    )
     args = parser.parse_args()
     run_backtest(args.symbol)
