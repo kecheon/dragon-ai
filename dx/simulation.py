@@ -49,6 +49,7 @@ def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
         final_pnl_strategy = None
         status = "HOLD"
         balancing_attempts = 0
+        cycle_realized_pnl = 0.0
 
         for j in range(simulation_window):
             current_step = i + j
@@ -60,11 +61,13 @@ def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
 
             if trigger_activated:
                 mode_before = strategy._get_current_mode(long_pos, short_pos)
-                status = strategy.determine_next_action(
+                status, pnl_from_action = strategy.determine_next_action(
                     long_pos, short_pos, AccountState(u_loss=0, margin_usage=0.5), market_price,
                     data['plus_di'].iloc[current_step], data['minus_di'].iloc[current_step], 
-                    data['adx'].iloc[current_step], balancing_attempts
+                    data['adx'].iloc[current_step], balancing_attempts, cycle_realized_pnl
                 )
+                cycle_realized_pnl += pnl_from_action
+                
                 mode_after = strategy._get_current_mode(long_pos, short_pos)
                 if mode_before == StrategyMode.IMBALANCED and mode_after == StrategyMode.LOCKED:
                     balancing_attempts += 1
@@ -72,14 +75,16 @@ def run_simulation(symbol: str, config: StrategyConfig, fixed_spread: float):
                 status = "HOLD"
 
             if "EXIT" in status:
-                final_pnl_strategy = ((market_price - long_pos.entry_price) * long_pos.size) + \
-                                     ((short_pos.entry_price - market_price) * short_pos.size)
+                final_unrealized_pnl = ((market_price - long_pos.entry_price) * long_pos.size) + \
+                                       ((short_pos.entry_price - market_price) * short_pos.size)
+                final_pnl_strategy = final_unrealized_pnl + cycle_realized_pnl
                 break
         
         if final_pnl_strategy is None:
             final_market_price = data['Close'].iloc[i + simulation_window - 1]
-            final_pnl_strategy = ((final_market_price - long_pos.entry_price) * long_pos.size) + \
-                                 ((short_pos.entry_price - final_market_price) * short_pos.size)
+            final_unrealized_pnl = ((final_market_price - long_pos.entry_price) * long_pos.size) + \
+                                   ((short_pos.entry_price - final_market_price) * short_pos.size)
+            final_pnl_strategy = final_unrealized_pnl + cycle_realized_pnl
 
         baseline_pnl = ((data['Close'].iloc[i + simulation_window - 1] - initial_long_entry) * initial_position_size) + \
                        ((initial_short_entry - data['Close'].iloc[i + simulation_window - 1]) * initial_position_size)
